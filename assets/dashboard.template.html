@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CCDC · Dashboard theo dõi tồn</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<div id="loading" class="loading"><div class="brand-mark">▦</div><h2>Đang mở dữ liệu CCDC</h2><p id="loading-message">Giải nén bản chụp 91.955 dòng…</p><span class="loader"></span></div>
+<div id="app" hidden>
+<aside class="sidebar">
+ <div class="brand"><div class="brand-mark">▦</div><div><b>CCDC</b><span>QUẢN LÝ TÀI SẢN</span></div></div>
+ <div class="workspace-label">KHÔNG GIAN LÀM VIỆC</div>
+ <nav><button data-page="overview" class="nav active"><span>◫</span>Tổng quan</button><button data-page="details" class="nav"><span>▤</span>Chi tiết dữ liệu</button><button data-page="admin" class="nav"><span>⚙</span>Quản trị dữ liệu</button></nav>
+ <div class="sidebar-note"><span class="live-dot"></span>Demo local · Offline<p>Dữ liệu chạy trên máy của bạn.<br>Không kết nối dịch vụ cloud.</p></div>
+ <div class="sidebar-bottom"><label for="role">Vai trò mô phỏng</label><select id="role"><option>Người xem</option><option>Người nhập</option><option>Người duyệt</option></select><p>Không phải đăng nhập bảo mật. Vai trò có thể tự thay đổi.</p><div class="version-stamp">BẢN DEMO <span>1.0</span></div></div>
+</aside>
+<div class="main-shell">
+ <header><span>Quản lý công cụ dụng cụ <span class="breadcrumb">/</span> <b id="breadcrumb">Tổng quan</b></span><span class="header-local"><span class="live-dot"></span>Chạy trên máy cá nhân</span></header>
+ <main>
+ <div class="page-heading"><div><div class="eyebrow">DASHBOARD CCDC</div><h1 id="page-title">Tổng quan tồn CCDC</h1><p id="page-description">Theo dõi hiện trạng, phân loại và vòng đời sử dụng.</p></div><button class="btn" id="goto-admin">↑ Cập nhật dữ liệu</button></div>
+ <section id="data-context" class="data-context"><span><span class="live-dot"></span> <strong id="cutoff-label"></strong></span><span id="age-label"></span><span id="version-label" class="version-pill"></span></section>
+ <section id="filters-panel" class="panel filters-panel">
+  <div class="section-top"><b>Bộ lọc dùng chung</b><button id="reset" class="text-btn">↺ Đặt lại bộ lọc</button></div>
+  <div class="filters-grid"><div id="branch-filter"></div><div id="manager-filter"></div><div id="type-filter"></div><div id="status-filter"></div><div class="filter-date"><label for="as-of">Ngày chốt dữ liệu</label><input id="as-of" type="date"></div></div>
+  <div class="filter-bottom"><div class="search-box"><span>⌕</span><input id="search" aria-label="Tìm kiếm mã, tên, serial, đơn vị" placeholder="Tìm mã VTTB, tên, serial, đơn vị…"></div><span id="match-count"></span><span id="issue-chip"></span></div>
+ </section>
+ <div id="no-version" class="panel empty" hidden><h3>Chưa có dữ liệu ở thời điểm đã chọn</h3><p>Không có phiên đã công bố tính đến ngày này. Dashboard không lấy dữ liệu tương lai.</p></div>
+ <section id="overview-page">
+  <div class="kpi-grid">
+   <article class="kpi"><div class="kpi-top"><span>Số mã CCDC đang sử dụng</span><span class="info" title="Đếm Mã VTTB duy nhất, không rỗng, trên các bản ghi Đang sử dụng sau lọc.">i</span></div><div class="kpi-number" id="kpi-using">—</div><div class="kpi-foot"><span class="mini-icon teal">▦</span>Mã VTTB duy nhất · Đang sử dụng</div></article>
+   <article class="kpi"><div class="kpi-top"><span>Số mã vật tư chưa có ngày<br>đưa vào sử dụng</span><span class="info" title="Đếm mã duy nhất thuộc Chủng loại = Vật tư và ngày nguồn để trống. Không kết luận tất cả đều thực sự chưa sử dụng.">i</span></div><div class="kpi-number" id="kpi-material">—</div><div class="kpi-foot"><span class="mini-icon amber">◷</span>Mã duy nhất · Cần kiểm tra ngày</div></article>
+   <article class="kpi"><div class="kpi-top"><span>Tỷ lệ bản ghi thiết bị hỏng</span><span id="broken-info" class="info">i</span></div><div class="kpi-number" id="kpi-broken">—</div><div class="kpi-foot" id="broken-foot"></div></article>
+  </div>
+  <div class="overview-grid">
+   <article class="panel branch-panel"><div class="section-top"><div><h2>Số mã theo chi nhánh</h2><p>Mã VTTB duy nhất trong từng tình trạng</p></div><span class="count-badge" id="branch-count"></span></div><div class="table-scroll branch-table" id="branch-table"></div><p class="table-note">Một mã có thể thuộc nhiều chi nhánh hoặc trạng thái. Tổng các nhóm có thể lớn hơn số mã duy nhất toàn bộ.</p></article>
+   <article class="panel"><div class="section-top"><div><h2>Theo tình trạng</h2><p>Mã VTTB duy nhất trong từng nhóm</p></div></div><div id="status-bars" class="status-bars"></div><p class="table-note">Đếm mã, không cộng Số lượng.</p></article>
+  </div>
+  <article class="panel age-panel"><div class="section-top"><div><h2>Phân bố thời gian sử dụng</h2><p>Bản ghi Đang sử dụng · Số tháng tròn</p></div><span class="legend"><span class="live-dot"></span>Bản ghi có ngày hợp lệ</span></div><div id="age-chart"></div><p id="age-note" class="table-note"></p></article>
+  <article class="panel quality-panel"><div class="section-top"><div><h2>Chất lượng dữ liệu</h2><p>Chọn chỉ báo để lọc toàn bộ dashboard</p></div><button class="text-btn" id="review-link">Xem tên cần rà soát →</button></div><div id="quality-tiles" class="quality-grid"></div></article>
+ </section>
+ <section id="details-page" hidden>
+  <article class="panel"><div class="section-top detail-toolbar"><div><h2>Chi tiết dữ liệu</h2><p id="detail-count"></p></div><div class="button-group"><details class="columns-picker"><summary class="btn">☷ Chọn cột</summary><div id="column-options" class="column-options"></div></details><button class="btn" id="csv-export">↓ CSV</button><button class="btn primary" id="excel-export">↓ Excel</button></div></div><div id="details-table" class="table-scroll detail-table"></div><div class="pagination"><span id="page-info"></span><div class="button-group"><label>Số dòng <select id="page-size"><option>50</option><option selected>100</option><option>200</option><option>500</option></select></label><button class="btn" id="prev-page">←</button><span id="page-number"></span><button class="btn" id="next-page">→</button></div></div></article>
+  <p class="table-note">Xuất toàn bộ dữ liệu sau lọc, không chỉ trang đang xem. File xuất có ngày chốt và ngày tính tuổi. Excel giữ mã/serial ở kiểu chuỗi; khi nhập CSV vào Excel, chọn kiểu Text cho các cột này.</p>
+ </section>
+ <section id="admin-page" hidden>
+  <div class="notice"><b>Vai trò chỉ là mô phỏng.</b> Không có đăng nhập bảo mật. Lịch sử và file nhập lưu trong trình duyệt này (IndexedDB), không chia sẻ với Streamlit. Di chuyển file HTML, đổi trình duyệt hoặc xóa dữ liệu trình duyệt có thể làm mất lịch sử local; nên tải bản sao lưu.</div>
+  <div class="admin-tabs"><button data-admin="upload" class="tab active">Nhập & duyệt phiên</button><button data-admin="history" class="tab">Lịch sử / khôi phục</button><button data-admin="mapping" class="tab">Bảng phân loại</button></div>
+  <div id="upload-admin" class="panel admin-panel"><h2>Cập nhật bản chụp hiện trạng</h2><p>Mỗi file thay thế toàn bộ hiện trạng của một phiên, không cộng dồn với các kỳ trước.</p><div class="upload-row"><label>Ngày chốt dữ liệu<input type="date" id="upload-cutoff"></label><label>File Excel (.xlsx, tối đa 25 MB)<input type="file" id="upload-file" accept=".xlsx"></label><button class="btn primary" id="inspect-file">Kiểm tra & xem trước</button></div><div id="upload-result"></div><div id="pending-list"></div></div>
+  <div id="history-admin" class="panel admin-panel" hidden><div class="section-top"><div><h2>Lịch sử phiên</h2><p>Khôi phục tạo lần công bố mới, giữ ngày chốt và mọi lịch sử.</p></div><button class="btn" id="backup-export">↓ Sao lưu lịch sử local</button></div><label class="backup-import">Khôi phục từ file sao lưu .json.gz <input type="file" id="backup-import" accept=".gz"></label><div id="history-table" class="table-scroll"></div><div id="history-preview"></div></div>
+  <div id="mapping-admin" class="panel admin-panel" hidden><h2>Quản lý bảng phân loại</h2><p>Ghép chính xác tên sau chuẩn hóa khoảng trắng và chữ hoa/thường. Không tự ghép gần đúng. Bảng có nhiều loại cho một tên sẽ được đánh dấu xung đột.</p><div class="upload-row"><label>Bảng phân loại (.xlsx, sheet Chi_tiet)<input id="mapping-file" type="file" accept=".xlsx"></label><button id="inspect-mapping" class="btn">Kiểm tra bảng phân loại</button></div><div id="mapping-result"></div><p class="table-note">Bảng mới dùng cho lần nhập tiếp theo. Phiên đã công bố giữ nguyên phân loại của phiên đó; để áp dụng lại, nhập và duyệt một bản chụp mới.</p></div>
+  <article class="panel admin-panel"><div class="section-top"><div><h2>Tên chưa phân loại / cần rà soát</h2><p id="review-summary">Theo bộ lọc dùng chung hiện tại.</p></div></div><input id="review-search" class="plain-input" placeholder="Tìm tên cần xử lý…" aria-label="Tìm tên cần rà soát"><div id="review-table" class="table-scroll"></div><div id="similar-names"></div><p class="table-note">Tên gần giống chỉ là gợi ý tham khảo, không được tự gán loại.</p></article>
+ </section>
+ <footer><span>CCDC · Dashboard local</span><span id="footer-count"></span></footer>
+ </main>
+</div>
+</div>
+<div id="toast" class="toast" role="status" hidden></div>
+<script id="sample-data" type="application/octet-stream">__DATA__</script>
+<script id="sample-original" type="application/octet-stream">__ORIGINAL__</script>
+<script id="xlsx-vendor">/*__XLSX__*/</script>
+<script>/*__JS__*/</script>
+</body></html>

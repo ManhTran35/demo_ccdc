@@ -1,0 +1,7 @@
+{
+  "name": "ccdc-local-demo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {"test:browser": "node tests/browser.cjs"},
+  "devDependencies": {"@playwright/test": "1.61.1"}
+}

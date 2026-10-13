@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+data/runtime/
+dist/
+.pytest_cache/
+node_modules/
