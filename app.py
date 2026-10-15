@@ -2,18 +2,30 @@
 from datetime import date
 import hashlib
 import json
+import logging
+import uuid
 
 import pandas as pd
 import streamlit as st
 
 from core import (
-    AGE_GROUPS, DETAIL_COLUMNS, ROOT, UNKNOWN, UNCLASSIFIED, VersionStore,
+    AGE_GROUPS, DETAIL_COLUMNS, UNKNOWN, UNCLASSIFIED,
     apply_filters, classification_map, export_csv, export_excel, export_frame,
-    metrics, normalize, overview_tables, read_table, review_names, seed_store,
+    metrics, overview_tables, review_names,
     suggestions, vn_today,
 )
 
-st.set_page_config(page_title="CCDC · Theo dõi tồn", page_icon="📦", layout="wide")
+from services.config import Settings, ConfigurationError
+from services.auth import verify_iap_identity, AuthenticationError
+from services.repository import DataRepository, live_quality_report
+from services.storage import ObjectNotFound
+from services.transform import parse_classification, transform_inventory, compare_metrics
+from services.validation import ValidationError
+from ui_labels import APP_TITLE, PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN, KPI_USING, KPI_MATERIAL_MISSING, KPI_BROKEN_RATE
+
+logger = logging.getLogger(__name__)
+
+st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
 st.markdown("""<style>
 .stApp{background:#f5f7fb}h1,h2,h3{color:#152744}
 [data-testid=stMetric]{background:white;padding:20px;border-radius:14px;border:1px solid #e4e9f2}
@@ -23,22 +35,41 @@ st.markdown("""<style>
 
 @st.cache_resource
 def get_store():
-    store = VersionStore()
-    seed_store(store)
+    store = DataRepository(Settings.from_env())
+    store.seed_synthetic_demo()
     return store
 
 
-@st.cache_data(show_spinner="Đang chuẩn hóa bản chụp dữ liệu…", max_entries=5)
-def load_version(version_id, today_iso):
-    payload = VersionStore().load(version_id)
-    df, report = normalize(payload["table"], payload["mapping"], date.fromisoformat(today_iso))
-    return df, report, payload["mapping"]
+@st.cache_resource(show_spinner="Đang đọc bản chụp Parquet…", max_entries=2)
+def load_version(version_id, today_iso, namespace, _store):
+    today = date.fromisoformat(today_iso)
+    df = _store.read_dataset(version_id, today)
+    report = live_quality_report(df, _store.manager.read_validation(version_id), today)
+    report["dataset_note"] = _store.manager.get_manifest(version_id).get("note", "")
+    return df, report, _store.manager.read_mapping(version_id)
+
+
+def storage_namespace(store):
+    c = store.settings
+    return f"gcs:{c.project_id}:{c.bucket}:{c.prefix}" if c.cloud_mode else "local:" + str(c.local_data_dir.resolve())
 
 
 @st.fragment(run_every="30s")
-def refresh_day(rendered_day):
-    if vn_today().isoformat() != rendered_day:
+def refresh_state(rendered_day, rendered_version, rendered_generation, _store):
+    # Scheduled fragments execute separately from main()'s error boundary.
+    try:
+        active = _store.get_active_version()
+    except Exception as exc:
+        logger.error("dashboard_refresh_failed error_type=%s", type(exc).__name__)
+        return st.rerun(scope="app")
+    key = (active["active_version"], active["_generation"]) if active else (None, 0)
+    if vn_today().isoformat() != rendered_day or key != (rendered_version, rendered_generation):
         st.rerun(scope="app")
+
+
+def reset_active_selection():
+    st.session_state.pop("as_of", None)
+    st.session_state.pop("observed_pointer", None)
 
 
 def quality_report(report):
@@ -55,6 +86,11 @@ def quality_report(report):
 
 
 def administration(store, role, today):
+    if store.settings.cloud_mode:
+        raise PermissionError("Web online V1-A chỉ cho phép xem; ingestion qua CLI có IAM và ADC.")
+    manager = store.manager
+    actor = "local-admin (mô phỏng)"
+    namespace = storage_namespace(store)
     st.title("Cập nhật dữ liệu & phân loại")
     st.info("Vai trò chỉ là mô phỏng trong bản local. Người dùng có thể tự đổi vai trò; đây không phải đăng nhập hoặc phân quyền bảo mật.")
     upload_tab, history_tab, mapping_tab = st.tabs(["Nhập & duyệt phiên", "Lịch sử / khôi phục", "Bảng phân loại"])
@@ -62,114 +98,151 @@ def administration(store, role, today):
         st.write("Mỗi file là một bản chụp toàn bộ. Công bố phiên mới không cộng dồn số dòng với phiên cũ.")
         cutoff = st.date_input("Ngày chốt của file mới", value=today, key="upload_cutoff")
         uploaded = st.file_uploader("Chọn file hiện trạng CCDC (.xlsx)", type=["xlsx"])
-        st.caption("Tối đa 25 MB. Ngày thiếu/không hợp lệ và serial nghi trùng là cảnh báo; số lượng thiếu, âm hoặc không phải số chặn công bố.")
+        st.caption(f"Tối đa {store.settings.max_upload_mb} MB. Số lượng lỗi/cột thiếu chặn công bố. File có công thức hoặc liên kết ngoài cần được xuất thành bản chỉ chứa giá trị.")
         if st.button("Kiểm tra & tạo bản xem trước", disabled=uploaded is None or role == "Người xem", type="primary"):
             content = uploaded.getvalue()
-            if len(content) > 25 * 1024 * 1024:
-                st.error("File vượt giới hạn 25 MB.")
+            if len(content) > store.settings.max_upload_mb * 1024 * 1024:
+                st.error("File vượt giới hạn dung lượng.")
             else:
-                digest = hashlib.sha256(content).hexdigest()
-                (store.root / "originals" / (digest + ".xlsx")).write_bytes(content)
+                stage = manager.stage_upload(content, uploaded.name, actor)
                 try:
-                    current = store.latest()
-                    mapping_file = store.root / "classification.json"
-                    mapping = json.loads(mapping_file.read_text(encoding="utf-8")) if mapping_file.exists() else (store.load(current["id"])["mapping"] if current else {})
-                    with st.spinner("Đang đọc Excel và kiểm tra…"):
-                        table = read_table(content)
-                        _, report = normalize(table, mapping, today)
-                        version_id = store.create(content, uploaded.name, cutoff.isoformat(), table, mapping)
-                    st.session_state["preview_id"] = version_id
+                    active = manager.get_active()
+                    classification_stage = None
+                    try:
+                        saved = json.loads(manager.storage.get("metadata/local_classification.json").data)
+                        mapping = saved["mapping"]
+                        classification_stage = saved.get("classification_stage_id")
+                    except ObjectNotFound:
+                        mapping = manager.read_mapping(active["active_version"]) if active else {}
+                        if active:
+                            classification_stage = manager.read_validation(active["active_version"]).get("classification_stage_id")
+                    with st.spinner("Đang kiểm tra Excel và chuẩn bị Parquet…"):
+                        result = transform_inventory(content, mapping, today, store.settings, uploaded.name)
+                        if classification_stage:
+                            result.report["classification_stage_id"] = classification_stage
+                        manager.record_stage_validation(stage["id"], result.report)
+                        preview = manager.prepare_version(stage, result.parquet_bytes, mapping, result.report, result.metrics,
+                                                          cutoff.isoformat(), actor, active["_generation"] if active else 0)
+                    st.session_state["preview_id"] = preview["id"]
                     st.success("Đã lưu nguyên file gốc và tạo phiên chờ duyệt. Phiên hiện hành chưa thay đổi.")
-                except Exception as exc:
-                    st.error(f"Không thể tạo bản xem trước: {exc}. File gốc đã lưu; phiên hiện hành không thay đổi.")
-        pending = [v for v in store.list() if not v["published_at"]]
+                    if active:
+                        st.dataframe(pd.DataFrame(compare_metrics(result.metrics, manager.read_metrics(active["active_version"]))).T)
+                except ValidationError as exc:
+                    manager.record_stage_validation(stage["id"], exc.report)
+                    st.error(str(exc) + " File gốc đã được lưu ở staging; phiên hiện hành không thay đổi.")
+        pending = [v for v in store.list_versions() if not v["published"]]
         if pending:
-            options = {v["id"]: f"{v['name']} · chốt {v['cutoff']} · {v['id'][:8]}" for v in pending}
+            options = {v["id"]: f"{v['source_filename']} · chốt {v['data_date']} · {v['id']}" for v in pending}
             default = st.session_state.get("preview_id")
             idx = list(options).index(default) if default in options else 0
             pending_id = st.selectbox("Phiên chờ duyệt", list(options), format_func=options.get, index=idx)
-            try:
-                df, report, mapping = load_version(pending_id, today.isoformat())
-                quality_report(report)
-                st.dataframe(df[DETAIL_COLUMNS].head(100), hide_index=True)
-                names = review_names(df, mapping)
-                st.subheader("Tên chưa phân loại / cần rà soát")
-                st.dataframe(names, hide_index=True)
-                if not names.empty:
-                    chosen = st.selectbox("Tên cần xem gợi ý", names["Tên VTTB"].tolist())
-                    st.write("Tên gần giống để tham khảo, không tự gán:", suggestions(chosen, mapping) or "Không có gợi ý phù hợp.")
-                if st.button("Công bố phiên này", type="primary", disabled=role != "Người duyệt" or bool(report["errors"])):
-                    store.publish(pending_id, role)
-                    st.session_state.pop("as_of", None)
-                    st.success("Đã công bố. Mở Tổng quan để xem phiên mới.")
-                    st.rerun()
-            except ValueError as exc:
-                st.error(str(exc))
+            df, report, mapping = load_version(pending_id, today.isoformat(), namespace, store)
+            quality_report(report)
+            st.dataframe(df[DETAIL_COLUMNS].head(100), hide_index=True)
+            names = review_names(df, mapping)
+            st.subheader("Tên chưa phân loại / cần rà soát")
+            st.dataframe(names, hide_index=True)
+            if not names.empty:
+                chosen = st.selectbox("Tên cần xem gợi ý", names["Tên VTTB"].tolist())
+                st.write("Tên gần giống để tham khảo, không tự gán:", suggestions(chosen, mapping) or "Không có gợi ý phù hợp.")
+            confirmed = st.checkbox("Tôi đã kiểm tra bản xem trước và xác nhận thay thế toàn bộ phiên hiện hành", key=f"confirm_{pending_id}")
+            if st.button("Công bố phiên này", type="primary", disabled=role != "Người duyệt" or not confirmed or bool(report["errors"])):
+                preview = manager.get_preview(pending_id)
+                manager.commit(pending_id, preview["confirmation_token"], actor, preview["expected_active_generation"])
+                reset_active_selection()
+                st.rerun()
         else:
             st.caption("Chưa có phiên chờ duyệt.")
     with history_tab:
-        versions = store.list()
-        st.dataframe(pd.DataFrame([{**v, "Trạng thái": "Đã công bố" if v["published_at"] else "Chờ duyệt"} for v in versions]), hide_index=True)
-        published = store.list(True)
+        published = [v for v in store.list_versions() if v["published"]]
+        st.dataframe(pd.DataFrame([{"Phiên": v["id"], "Ngày chốt": v["data_date"], "File": v["source_filename"], "Số dòng": v["row_count"], "Hiện hành": v["current"], "Người công bố": v["published_by"]} for v in published]), hide_index=True)
         if published:
-            labels = {v["id"]: f"{v['cutoff']} · {v['name']} · {v['id'][:8]}" for v in published}
+            labels = {v["id"]: f"{v['data_date']} · {v['source_filename']} · {v['id']}" for v in published}
             selected = st.selectbox("Chọn phiên đã công bố để xem lại", list(labels), format_func=labels.get)
-            old, report, mapping = load_version(selected, today.isoformat())
-            st.caption(f"{len(old):,} dòng; tuổi sử dụng được tính lại đến {today.strftime('%d/%m/%Y')}.")
+            old, report, mapping = load_version(selected, today.isoformat(), namespace, store)
+            st.caption(f"{len(old):,} dòng; tuổi sử dụng tính lại đến {today.strftime('%d/%m/%Y')}.")
             st.dataframe(old[DETAIL_COLUMNS].head(100), hide_index=True)
             meta = next(v for v in published if v["id"] == selected)
-            st.download_button("Tải nguyên file gốc", (store.root / "originals" / (meta["digest"] + ".xlsx")).read_bytes(), file_name=meta["name"])
-            if st.button("Khôi phục bản chụp này", disabled=role != "Người duyệt"):
-                store.restore(selected, role)
-                st.session_state.pop("as_of", None)
-                st.success("Đã tạo lần công bố mới từ bản chụp cũ, giữ nguyên ngày chốt; không xóa lịch sử.")
+            st.download_button("Tải nguyên file gốc", manager.read_source(selected), file_name=meta["source_filename"])
+            active = manager.get_active()
+            preview = manager.preview_rollback(selected, active["_generation"])
+            confirm = st.checkbox("Xác nhận chuyển phiên hiện hành về bản chụp đã chọn", key=f"confirm_rollback_{selected}_{active['_generation']}")
+            if st.button("Khôi phục bản chụp này", disabled=role != "Người duyệt" or not confirm):
+                manager.rollback(selected, actor, active["_generation"], preview["confirmation_token"])
+                reset_active_selection()
                 st.rerun()
     with mapping_tab:
-        st.write("Ghép chính xác sau chuẩn hóa khoảng trắng và chữ hoa/thường. Tên tham chiếu xung đột được đánh dấu cần rà soát; số dòng dữ liệu không tăng.")
+        st.write("Ghép đúng tên sau chuẩn hóa khoảng trắng và chữ hoa/thường. Phân loại xung đột được đánh dấu cần rà soát, không nhân dòng nguồn.")
         file = st.file_uploader("Thay bảng phân loại (.xlsx, sheet Chi_tiet)", type=["xlsx"], key="classification_upload")
-        if st.button("Kiểm tra bảng phân loại", disabled=file is None):
-            try:
-                mapping, report = classification_map(read_table(file.getvalue(), True))
-                st.session_state["mapping_preview"] = (mapping, report, file.getvalue())
-            except Exception as exc:
-                st.error(str(exc))
+        if st.button("Kiểm tra bảng phân loại", disabled=file is None or role == "Người xem"):
+            if file.size > store.settings.max_upload_mb * 1024 * 1024:
+                st.error("File vượt giới hạn dung lượng.")
+            else:
+                stage = manager.stage_upload(file.getvalue(), file.name, actor)
+                try:
+                    mapping, report = parse_classification(file.getvalue(), store.settings, file.name)
+                    manager.record_stage_validation(stage["id"], report)
+                    st.session_state["mapping_preview"] = (mapping, report, stage["id"])
+                except ValidationError as exc:
+                    manager.record_stage_validation(stage["id"], exc.report)
+                    st.error(str(exc))
         if "mapping_preview" in st.session_state:
-            mapping, report, original = st.session_state["mapping_preview"]
+            mapping, report, stage_id = st.session_state["mapping_preview"]
             st.json(report)
             st.dataframe(pd.DataFrame([[k] + v for k, v in mapping.items()], columns=["Tên chuẩn hóa", "Loại VTTB", "Nhóm lớn", "Trạng thái phân loại", "Ghi chú"]), hide_index=True)
             if st.button("Lưu bảng phân loại cho lần nhập tiếp theo", disabled=role != "Người duyệt"):
-                (store.root / "classification.json").write_text(json.dumps(mapping, ensure_ascii=False), encoding="utf-8")
-                (store.root / "originals" / (hashlib.sha256(original).hexdigest() + ".xlsx")).write_bytes(original)
-                st.success("Đã lưu. Các phiên đã công bố giữ nguyên bảng phân loại của phiên đó; nhập lại file hiện trạng và duyệt để áp dụng phân loại mới.")
-        st.caption("Bảng phân loại mẫu được giữ tại data/samples/classification.xlsx.")
+                key = "metadata/local_classification.json"
+                try:
+                    generation = manager.storage.get(key).generation
+                except ObjectNotFound:
+                    generation = 0
+                manager.storage.put(key, json.dumps({"mapping": mapping, "classification_stage_id": stage_id}, ensure_ascii=False).encode(), if_generation_match=generation, content_type="application/json")
+                st.success("Đã lưu cho lần nhập tiếp theo. Các phiên đã công bố giữ nguyên phân loại của phiên đó.")
 
 
 def main():
+    settings = Settings.from_env()
+    identity = verify_iap_identity(st.context.headers, settings) if settings.cloud_mode else None
     store = get_store()
     today = vn_today()
-    refresh_day(today.isoformat())
+    active = store.get_active_version()
+    refresh_state(today.isoformat(), active["active_version"] if active else None, active["_generation"] if active else 0, store)
     with st.sidebar:
         st.markdown("## 📦 CCDC\nTheo dõi tồn & vòng đời")
-        page = st.radio("Điều hướng", ["Tổng quan", "Chi tiết dữ liệu", "Quản trị"])
-        role = st.selectbox("Vai trò mô phỏng", ["Người xem", "Người nhập", "Người duyệt"])
-        st.caption("Mô phỏng, không phải đăng nhập bảo mật.")
-    if page == "Quản trị":
+        page = st.radio("Điều hướng", [PAGE_OVERVIEW, PAGE_DETAILS] if settings.cloud_mode else [PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN])
+        role = "Người xem"
+        if identity:
+            st.caption("Đã xác minh qua IAP: " + identity.email)
+            st.caption("V1-A: cập nhật dữ liệu bằng CLI dành cho Admin được cấp IAM.")
+        else:
+            role = st.selectbox("Vai trò mô phỏng", ["Người xem", "Người nhập", "Người duyệt"])
+            st.caption("Local: mô phỏng, không phải đăng nhập bảo mật.")
+    if page == PAGE_ADMIN:
         administration(store, role, today)
         return
-    latest = store.latest()
-    if not latest:
-        st.warning("Chưa có phiên đã công bố. Vào Quản trị để nhập và duyệt dữ liệu.")
+    if not active:
+        st.warning("Chưa có phiên đã công bố. Admin cần validate và publish bằng script ingestion.")
         return
+    observed = (active["active_version"], active["_generation"])
+    if st.session_state.get("observed_pointer") != observed:
+        st.session_state.pop("as_of", None)
+        st.session_state["observed_pointer"] = observed
     with st.sidebar:
         st.divider()
         st.markdown("### Bộ lọc dùng chung")
-        cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(latest["cutoff"]), key="as_of")
-    version = store.as_of(cutoff.isoformat())
+        cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(active["data_date"]), key="as_of")
+    version = store.select_version(cutoff.isoformat(), active)
     if not version:
         st.title(page)
         st.info("Chưa có phiên công bố tính đến ngày đã chọn. Không lấy dữ liệu ở thời điểm tương lai.")
         return
-    df, report, mapping = load_version(version["id"], today.isoformat())
+    df, report, mapping = load_version(version["id"], today.isoformat(), storage_namespace(store), store)
+    if "DỮ LIỆU GIẢ" in report.get("dataset_note", ""):
+        st.sidebar.info("Đang xem dữ liệu giả cho demo local.")
+    for key, column in [("branches", "Chi nhánh"), ("types", "Loại VTTB"), ("statuses", "Tình trạng")]:
+        if key in st.session_state:
+            valid = set(df[column].unique())
+            st.session_state[key] = [value for value in st.session_state[key] if value in valid]
     with st.sidebar:
         branches = st.multiselect("Chi nhánh", sorted(df["Chi nhánh"].unique()), key="branches")
         possible_managers = sorted(df.loc[df["Chi nhánh"].isin(branches) if branches else pd.Series(True, index=df.index), "Đơn vị quản lý"].unique())
@@ -188,9 +261,9 @@ def main():
     m = metrics(filtered)
     if page == "Tổng quan":
         a, b, c = st.columns(3)
-        a.metric("Số mã CCDC đang sử dụng", f"{m['using_codes']:,}".replace(",", "."), help="Số Mã VTTB duy nhất (không rỗng) trên các bản ghi Đang sử dụng sau lọc.")
-        b.metric("Số mã vật tư chưa có ngày đưa vào sử dụng", f"{m['material_missing_codes']:,}".replace(",", "."), help="Mã VTTB duy nhất, Chủng loại = Vật tư, ngày nguồn để trống. Không kết luận tất cả vật tư này chưa sử dụng.")
-        c.metric("Tỷ lệ bản ghi thiết bị hỏng", "—" if m["broken_rate"] is None else f"{m['broken_rate']:.3f}%".replace(".", ","), help=f"Tử số: {m['broken_rows']} bản ghi Thiết bị có tình trạng Hỏng. Mẫu số: {m['device_rows']} bản ghi Thiết bị sau lọc. Không cộng Số lượng hay ĐVT.")
+        a.metric(KPI_USING, f"{m['using_codes']:,}".replace(",", "."), help="Số Mã VTTB duy nhất (không rỗng) trên các bản ghi Đang sử dụng sau lọc.")
+        b.metric(KPI_MATERIAL_MISSING, f"{m['material_missing_codes']:,}".replace(",", "."), help="Mã VTTB duy nhất, Chủng loại = Vật tư, ngày nguồn để trống. Không kết luận tất cả vật tư này chưa sử dụng.")
+        c.metric(KPI_BROKEN_RATE, "—" if m["broken_rate"] is None else f"{m['broken_rate']:.3f}%".replace(".", ","), help=f"Tử số: {m['broken_rows']} bản ghi Thiết bị có tình trạng Hỏng. Mẫu số: {m['device_rows']} bản ghi Thiết bị sau lọc. Không cộng Số lượng hay ĐVT.")
         branch, status, ages, excluded = overview_tables(filtered)
         left, right = st.columns([2, 1])
         with left:
@@ -211,7 +284,7 @@ def main():
                 st.write(f"{flag}: {int(filtered['Vấn đề dữ liệu'].str.contains(flag, regex=False).sum()):,} bản ghi")
             st.dataframe(review_names(filtered, mapping), hide_index=True)
     else:
-        extras = st.multiselect("Thêm cột dữ liệu / giá trị gốc", [c for c in df.columns if c not in DETAIL_COLUMNS])
+        extras = st.multiselect("Thêm cột dữ liệu / giá trị gốc", [c for c in df.columns if c not in DETAIL_COLUMNS and not c.startswith("_")])
         columns = DETAIL_COLUMNS + extras
         page_size = st.selectbox("Số dòng mỗi trang", [50, 100, 200, 500], index=1)
         pages = max(1, math_ceil(len(filtered), page_size))
@@ -238,4 +311,16 @@ def math_ceil(a, b):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except AuthenticationError as exc:
+        st.error(str(exc))
+        st.stop()
+    except ConfigurationError:
+        st.error("Cấu hình môi trường chưa hợp lệ. Quản trị viên cần kiểm tra các biến môi trường theo tài liệu triển khai.")
+        st.stop()
+    except Exception as exc:
+        error_id = uuid.uuid4().hex[:12]
+        logger.error("dashboard_operation_failed error_id=%s error_type=%s", error_id, type(exc).__name__)
+        st.error(f"Không thể hoàn tất thao tác dữ liệu. Phiên trước không bị thay đổi nếu chưa công bố thành công. Hãy tải lại và liên hệ quản trị với mã {error_id}.")
+        st.stop()

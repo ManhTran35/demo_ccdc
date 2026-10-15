@@ -1,0 +1,8 @@
+"""Presentation labels; changing these does not change KPI formulas."""
+APP_TITLE = "CCDC · Theo dõi tồn"
+PAGE_OVERVIEW = "Tổng quan"
+PAGE_DETAILS = "Chi tiết dữ liệu"
+PAGE_ADMIN = "Quản trị"
+KPI_USING = "Số mã CCDC đang sử dụng"
+KPI_MATERIAL_MISSING = "Số mã vật tư chưa có ngày đưa vào sử dụng"
+KPI_BROKEN_RATE = "Tỷ lệ bản ghi thiết bị hỏng"

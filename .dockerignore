@@ -1,0 +1,12 @@
+# Allowlist: neither legacy data nor files added elsewhere enter the image context.
+**
+!Dockerfile
+!.dockerignore
+!requirements-lock.txt
+!app.py
+!core.py
+!ui_labels.py
+!services/
+!services/*.py
+services/__pycache__/
+services/*.pyc
