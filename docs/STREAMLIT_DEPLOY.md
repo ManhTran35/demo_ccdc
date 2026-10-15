@@ -31,10 +31,12 @@ URL mở màn hình triển khai ở trên không phải URL ứng dụng đang 
 ## Hành vi của bản triển khai
 
 `streamlit_app.py` dùng chung giao diện và công thức trong `app.py`/`core.py`,
-với theme đỏ–trắng theo Viettel Post. Khi Secrets có `data_source = "google_drive"`,
+với theme đỏ–trắng theo Viettel Post. Khi Secrets có bảng `[drive]` gồm
+`folder_id` và `service_account_json`,
 app đọc thư mục **Data**, file **Ton_CCDC_ddmmyyyy.xlsx** và file tham chiếu qua
 Drive API chỉ đọc. Xem [thiết lập Google Drive](GOOGLE_DRIVE.md). Nguồn Drive
-được kiểm tra mỗi 5 phút hoặc khi bấm Làm mới dữ liệu; ngày chốt lấy từ tên file.
+được cache bằng `st.cache_data` trong 30 phút hoặc bỏ qua cache khi bấm Làm mới
+dữ liệu; ngày chốt lấy từ tên file. Secrets cũ vẫn được hỗ trợ khi chuyển đổi.
 
 Khi chưa cấu hình nguồn Drive, app chọn `community-demo`: 1.000 dòng **dữ liệu giả**, chốt 13/10/2026,
 không có trang Admin, upload hoặc vai trò tự chọn. Bộ lọc, KPI, bảng, biểu đồ và

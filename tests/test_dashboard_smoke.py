@@ -33,6 +33,7 @@ class DashboardSmokeTests(unittest.TestCase):
         self.env.start()
         self.kservice = os.environ.pop("K_SERVICE", None)
         st.cache_resource.clear()
+        st.cache_data.clear()
         self.repo = DataRepository(Settings.from_env())
         self.repo.seed_synthetic_demo()
 
@@ -121,16 +122,25 @@ class DashboardSmokeTests(unittest.TestCase):
 
     def test_drive_entrypoint_refresh_and_historical_date_use_named_snapshots(self):
         from test_drive import FakeDrive, remote, FILE_B
+        from test_drive_loader import secrets
         client = FakeDrive(rows=30)
+        live_secrets = {}
         with tempfile.TemporaryDirectory() as directory, patch('services.config.tempfile.gettempdir', return_value=directory), \
-                patch('streamlit.secrets', {'data_source': 'google_drive'}), \
+                patch('streamlit.secrets', live_secrets), \
                 patch.object(DriveClient, 'from_service_account', return_value=client):
             app = AppTest.from_file(str(ROOT / 'streamlit_app.py'), default_timeout=60).run()
+            self.assertTrue(any('1,000 / 1,000' in m.value for m in app.markdown))
+            live_secrets.update(secrets())
+            app.run()
             self.assertFalse(app.exception, [e.message for e in app.exception])
             self.assertFalse(app.error)
+            self.assertTrue(any('30 / 30 bản ghi' in m.value for m in app.markdown))
             self.assertEqual(len(app.metric), 3)
             self.assertEqual(app.sidebar.radio[0].options, ['Tổng quan', 'Chi tiết dữ liệu'])
             self.assertTrue(any('Ton_CCDC_13102026' in c.value for c in app.caption))
+            self.assertTrue(any('Ngày dữ liệu: 13/10/2026' in c.value for c in app.caption))
+            self.assertTrue(any('Cập nhật nguồn: 15/10/2026 09:00' in c.value for c in app.caption))
+            self.assertTrue(any('Đồng bộ gần nhất:' in c.value for c in app.caption))
             content = synthetic_files(8)[0]
             client.contents[FILE_B] = content
             client.files.append(remote(FILE_B, 'Ton_CCDC_14102026.xlsx', content=content))
@@ -147,8 +157,11 @@ class DashboardSmokeTests(unittest.TestCase):
 
     def test_configured_drive_without_access_shows_error_instead_of_demo(self):
         from services.drive import DriveError
-        with patch('streamlit.secrets', {'data_source':'google_drive'}), \
-                patch.object(DriveClient, 'from_service_account', side_effect=DriveError('Chưa có quyền đọc Drive.')):
+        from test_drive import FakeDrive
+        from test_drive_loader import secrets
+        client=FakeDrive();client.error=DriveError('Chưa có quyền đọc Drive.')
+        with patch('streamlit.secrets', secrets()), \
+                patch.object(DriveClient, 'from_service_account', return_value=client):
             app=AppTest.from_file(str(ROOT/'streamlit_app.py'), default_timeout=60).run()
             self.assertFalse(app.exception)
             self.assertFalse(app.metric)

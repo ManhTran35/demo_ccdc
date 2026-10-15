@@ -1,11 +1,23 @@
 """Viettel Post inspired presentation, with no changes to business rules."""
 from html import escape
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from core import format_date, AGE_GROUPS
 
 RED = "#E51937"
+
+
+def format_timestamp(value):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return "Chưa có thông tin"
 
 CSS = """
 <style>

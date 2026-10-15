@@ -22,8 +22,8 @@ link trỏ trực tiếp vào Data thì đọc ngay. Có thể bật/tắt đọ
 
 Dashboard chọn bản có **ngày trong tên lớn nhất không vượt hôm nay Việt Nam**.
 Không lấy ngày upload/modified làm ngày chốt. Nếu có nhiều file cùng ngày,
-file được sửa gần nhất được ưu tiên. Tên không khớp quy tắc bị bỏ qua; tên có
-đúng 8 chữ số nhưng ngày không tồn tại sẽ báo lỗi để sửa. Chọn ngày cũ trên
+file được sửa gần nhất được ưu tiên. Tên không khớp quy tắc hoặc có ngày không
+tồn tại bị bỏ qua; nếu không còn bản hợp lệ, app báo lỗi để sửa. Chọn ngày cũ trên
 dashboard sẽ lấy file gần nhất không vượt ngày chọn, không đổi bản hiện hành
 của người xem khác. Không suy ra biến động nhập/xuất từ chênh lệch hai bản tồn.
 
@@ -41,23 +41,50 @@ của người xem khác. Không suy ra biến động nhập/xuất từ chênh
    của service account không thay thế quyền xem app Streamlit.
 4. Mở **App settings → Secrets**, dán mẫu
    [.streamlit/secrets.example.toml](../.streamlit/secrets.example.toml).
-   Điền thông tin service account thực tại đó, giữ đầy đủ `\n` trong private key.
+   Dùng bảng **`[drive]`**, điền `folder_id` và dán **nguyên JSON** vào
+   `service_account_json` giữa ba dấu nháy đơn. Giữ nguyên `\n` trong private key.
    Không gửi khóa qua chat hoặc đưa file JSON/Secrets vào Git.
 5. Lưu Secrets, reboot app nếu cần. Giữ entry point **`streamlit_app.py`**, nhánh
    **`deploy/streamlit-community`**, Python **3.12**.
 
-`data_source = "google_drive"` bật Drive; `"demo"` dùng dữ liệu giả để thử UI.
-Nếu không có Secrets thì mặc định vẫn là demo và có nhãn rõ ràng. **Khi đã bật
-Drive mà thiếu quyền/cấu hình, ứng dụng báo lỗi, không tự đổi sang dữ liệu giả.**
-Có thể dùng `CCDC_DATA_SOURCE=google_drive` để chọn nguồn khi chạy local; trong
-trường hợp đó dùng `.streamlit/secrets.toml` (đã ignore) hoặc Google ADC có scope
-`drive.readonly`. Ứng dụng không tự đọc `.env`.
+Chỉ cần có `[drive]` là `streamlit_app.py` tự chọn nguồn Drive, không cần thêm
+`data_source`. `folder_id` và `service_account_json` là hai trường bắt buộc;
+`reference_file_id`, `data_subfolder`, `recursive` là tùy chọn. Mẫu đã có ID
+Data và tham chiếu bạn cung cấp. Khi bỏ `reference_file_id`, app giữ file tham
+chiếu đã dùng ở phiên bản trước, bảo toàn phân loại và KPI.
+
+Secrets tối thiểu có cấu trúc:
+
+```toml
+[drive]
+folder_id = "ID_THU_MUC_DATA"
+service_account_json = '''
+{ "type": "service_account", "client_email": "...", "private_key": "...", "token_uri": "https://oauth2.googleapis.com/token" }
+'''
+```
+
+Thay phần JSON minh họa bằng JSON đầy đủ tải từ Google, không dùng nguyên dấu
+`...`. Có thể dùng bảng TOML `[drive.service_account_json]` thay chuỗi JSON.
+Không cần cấp quyền ghi Drive hoặc quyền truy cập toàn bộ Google Drive cá nhân:
+chỉ chia sẻ Data và file tham chiếu cho service account quyền Viewer.
+
+Để thử local, tạo `.streamlit/secrets.toml` từ mẫu và chạy
+`python -m streamlit run streamlit_app.py`. Nếu không có Secrets, mặc định là
+demo có nhãn rõ ràng. Khi có `[drive]` mà thiếu quyền/cấu hình, app báo lỗi,
+không đổi sang dữ liệu giả. Có thể đặt `data_source = "demo"` ở root để chủ
+động xem demo. Secrets cũ `[google_drive]` + `[gcp_service_account]` vẫn đọc được
+để thuận tiện chuyển đổi. Luồng mới không tự lấy ADC hoặc `.env` thay Secrets.
 
 ## Cập nhật file hằng kỳ
 
 Upload file `Ton_CCDC_ddmmyyyy.xlsx` hoàn chỉnh vào Data. Dashboard kiểm tra
-metadata mỗi **5 phút**, hoặc khi bấm **Làm mới dữ liệu**. Chỉ khi revision của
+metadata mỗi **30 phút**, hoặc khi bấm **Làm mới dữ liệu**. Chỉ khi revision của
 file hiện trạng hoặc file tham chiếu đổi, ứng dụng mới tải và biến đổi lại.
+`services/drive_loader.py` dùng `st.cache_data(ttl=1800)`, lưu danh sách file và
+bytes Excel trong RAM. Cache download tối đa hai file, không pickle Service
+Account/credentials hoặc tạo một DataFrame lớn cho từng người xem. Cache tách
+theo account/nguồn/file/revision; nút làm mới chỉ xóa cache tương ứng. Metadata
+được đọc trực tiếp để kiểm tra revision sau tải, tránh công bố file đang đổi.
 Google Sheets gốc được export qua Drive API thành XLSX; file XLSX đang hiển thị
 trong giao diện Google Sheets được tải dưới dạng XLSX. Google có giới hạn
 export đối với Sheets gốc; lỗi export được báo và không đổi bản hiện hành.
@@ -83,7 +110,9 @@ không khẳng định còn một bản chính thức trên đĩa máy Streamlit
 ## Kiểm tra và lỗi thường gặp
 
 - Nhãn nguồn phải là **Google Drive**, không phải Dữ liệu mẫu. Kiểm tra tên file
-  đang xem ở sidebar và ngày chốt trên đầu trang.
+  đang xem ở sidebar và ngày chốt trên đầu trang. Sidebar hiển thị ngày dữ liệu,
+  thời gian sửa nguồn và lần đồng bộ gần nhất theo múi giờ Việt Nam; thời gian
+  sửa file không thay thế ngày dữ liệu trong tên file.
 - Không thấy file: kiểm tra tên đúng 8 chữ số, đuôi `.xlsx`, quyền Viewer và
   ngày không ở tương lai. File `.xls`, `.xlsm`, shortcut và file tạm `~$` bị bỏ qua.
 - 401/403/404: kiểm tra Drive API, hai ID và chia sẻ **cả Data lẫn tham chiếu**
@@ -96,3 +125,25 @@ Các phép đọc được kiểm thử tự động bằng HTTP giả lập và
 test. Tại thời điểm triển khai mã, môi trường Codex bị proxy chặn hai liên kết
 Drive (403), chưa có credential Drive dùng được, nên **chưa xác minh đọc hai
 file thật**. Không coi kết quả test mô phỏng là kết nối thật đã thành công.
+
+## Local trước, Git Push sau
+
+```sh
+python -m unittest discover -s tests -v
+python scripts/benchmark_drive_loader.py --rows 100000 --output /tmp/ccdc-drive-benchmark.json
+git diff --check
+git status --short
+```
+
+Sau khi kiểm thử đạt, review thay đổi rồi commit/push source lên nhánh
+`deploy/streamlit-community`. Không thêm Service Account JSON hoặc file Secrets
+thật vào staging; `.gitignore` chặn `*.json`, `**/secrets.toml`, các Secrets biến
+thể và thư mục `credentials/`. Mẫu `secrets.example.toml` chỉ có placeholder.
+
+Streamlit Community Cloud Free không cần Docker, database hoặc Drive SDK riêng.
+Ứng dụng dùng `google-auth[requests]` với Drive API chỉ đọc. Để hạn chế RAM:
+chuẩn hóa Excel một lần, đọc Parquet cho UI, cache một DataFrame đã chuẩn hóa,
+phân trang bảng và xuất theo bộ lọc hiện có. Cache máy Streamlit có thể mất sau
+reboot; file gốc và lịch sử vẫn nằm trên Drive. Kết quả 100.000 dòng local được
+ghi trong [báo cáo rà soát/kiểm thử](DRIVE_LOADER_REVIEW.md); khả năng thực tế còn phụ thuộc workbook và tài
+nguyên Community Cloud cấp cho app.

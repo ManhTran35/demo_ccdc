@@ -199,6 +199,16 @@ def metadata_json(file_id, name, mime=XLSX):
 
 
 class DriveHTTPTests(unittest.TestCase):
+    def test_wrong_names_invalid_dates_and_temporary_files_are_not_candidates(self):
+        client=DriveClient(Mock())
+        files=[remote(FILE_A,'Ton_CCDC_13102026.xlsx'),
+               remote('invalid_file_01','Ton_CCDC_31022026.xlsx'),
+               remote('temporary_file1','~$Ton_CCDC_14102026.xlsx'),
+               remote('other_file_0001','Other_15102026.xlsx')]
+        with patch.object(client,'metadata',return_value=remote(FOLDER_ID,'Data',FOLDER)), \
+                patch.object(client,'_children',return_value=files):
+            self.assertEqual([file.id for file in client.list_inventory(DriveConfig())],[FILE_A])
+
     def test_parent_data_subfolder_pagination_and_reference_exclusion(self):
         session=Mock()
         def get(url, params, **kwargs):

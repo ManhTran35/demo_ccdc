@@ -7,7 +7,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 
 # Keep this separate from app.py's local and authenticated GCS deployments.
 try:
-    source = st.secrets.get("data_source", "demo")
+    source = st.secrets.get("data_source", "google_drive" if "drive" in st.secrets else "demo")
 except (FileNotFoundError, StreamlitSecretNotFoundError):
     source = "demo"
 source = os.environ.get("CCDC_DATA_SOURCE", source)

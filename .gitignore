@@ -23,3 +23,7 @@ downloads/
 !package-lock.json
 build/
 .streamlit/secrets.toml
+**/secrets.toml
+.streamlit/secrets.*.toml
+!.streamlit/secrets.example.toml
+credentials/

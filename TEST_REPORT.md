@@ -1,5 +1,8 @@
 # Báo cáo kiểm thử
 
+Loader Drive với Secrets `[drive]`, TTL 30 phút và kiểm thử 100.000 dòng:
+[báo cáo mới nhất](docs/DRIVE_LOADER_REVIEW.md).
+
 Thay đổi UI Viettel Post, xử lý ngày dd/mm/yyyy và đọc Google Drive trên Streamlit:
 [kết quả bản Streamlit V2](docs/STREAMLIT_V2_VALIDATION.md).
 

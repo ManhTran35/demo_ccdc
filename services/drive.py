@@ -57,7 +57,7 @@ class DriveConfig:
     reference_file_id: str = REFERENCE_ID
     data_subfolder: str = "Data"
     recursive: bool = True
-    refresh_seconds: int = 300
+    refresh_seconds: int = 1800
 
     def __post_init__(self):
         _file_id(self.folder_id)
@@ -217,8 +217,13 @@ class DriveClient:
             for item in items:
                 if config.recursive and item.mime_type == FOLDER and item.id not in visited:
                     queue.append((item.id, None))
-                elif item.id != config.reference_file_id and item.mime_type in {XLSX, SHEET} and item.data_date:
-                    inventory[item.id] = item
+                elif item.id != config.reference_file_id and item.mime_type in {XLSX, SHEET}:
+                    try:
+                        data_date = item.data_date
+                    except DriveError:
+                        continue  # An invalid calendar date is never a candidate.
+                    if data_date:
+                        inventory[item.id] = item
                 if len(inventory) > 500:
                     raise DriveError("Data vượt 500 bản chụp; hãy thu hẹp thư mục dữ liệu.")
         return list(inventory.values())
@@ -286,6 +291,8 @@ class DriveRepository(DataRepository):
         result.report["classification_stage_id"] = stage_class["id"]
         result.report["drive"] = {"fingerprint": fingerprint, "inventory_id": inventory.id,
                                   "reference_id": reference.id, "source_name": inventory.name,
+                                  "source_modified_at_utc": inventory.modified_time,
+                                  "loaded_at_utc": datetime.now(timezone.utc).isoformat(),
                                   "date_format": "dd/mm/yyyy", "normalization_revision": NORMALIZATION_REVISION}
         stage = self.manager.stage_upload(content, filename, actor)
         self.manager.record_stage_validation(stage["id"], result.report)
@@ -305,6 +312,8 @@ class DriveRepository(DataRepository):
                 return
             self._next_check = time.monotonic() + self.config.refresh_seconds
             try:
+                if force and hasattr(self.client, "clear_cache"):
+                    self.client.clear_cache()
                 files = self.client.list_inventory(self.config)
                 eligible = [f for f in files if f.data_date <= vn_today()]
                 if not eligible:
@@ -318,7 +327,10 @@ class DriveRepository(DataRepository):
                 if fingerprint != previous.get("fingerprint"):
                     self._prepare(latest, reference, publish=True)
                 self.last_error = ""
-                self.last_checked = datetime.now(timezone.utc).isoformat()
+                self.last_checked = getattr(self.client, "last_listed_at", "") or datetime.now(timezone.utc).isoformat()
+                # A successful poll must not run just before cache_data expires
+                # and then defer a fresh index for another full TTL.
+                self._next_check = time.monotonic() + self.config.refresh_seconds
             except (DriveError, ValidationError) as exc:
                 self.last_error = str(exc)
                 if not self.get_active_version():

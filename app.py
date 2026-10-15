@@ -21,8 +21,9 @@ from services.repository import DataRepository, live_quality_report
 from services.storage import ObjectNotFound
 from services.transform import parse_classification, transform_inventory, compare_metrics
 from services.validation import ValidationError
-from services.presentation import apply_theme, render_brand, render_header, age_chart, status_chart
-from services.drive import DriveConfig, DriveClient, DriveRepository, DriveError
+from services.presentation import apply_theme, render_brand, render_header, age_chart, status_chart, format_timestamp
+from services.drive import DriveError
+from services.drive_loader import create_drive_repository, drive_cache_namespace
 from ui_labels import APP_TITLE, PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN, KPI_USING, KPI_MATERIAL_MISSING, KPI_BROKEN_RATE
 
 logger = logging.getLogger(__name__)
@@ -31,24 +32,17 @@ st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
 apply_theme()
 
 
-@st.cache_resource
-def get_store():
+@st.cache_resource(max_entries=1)
+def get_store(app_env, source_scope):
     settings = Settings.from_env()
     if settings.drive_mode:
-        from streamlit.errors import StreamlitSecretNotFoundError
-        try:
-            config = DriveConfig.from_mapping(st.secrets.get("google_drive", {}))
-            account = st.secrets.get("gcp_service_account")
-        except (FileNotFoundError, StreamlitSecretNotFoundError):
-            config, account = DriveConfig(), None
-        client = DriveClient.from_service_account(account, settings.max_upload_mb * 1024 * 1024)
-        return DriveRepository(settings, config, client)
+        return create_drive_repository(settings)
     store = DataRepository(settings)
     store.seed_synthetic_demo()
     return store
 
 
-@st.cache_resource(show_spinner="Đang đọc bản chụp Parquet…", max_entries=2)
+@st.cache_resource(show_spinner="Đang đọc bản chụp Parquet…", max_entries=1)
 def load_version(version_id, today_iso, namespace, _store):
     today = date.fromisoformat(today_iso)
     df = _store.read_dataset(version_id, today)
@@ -82,6 +76,10 @@ def refresh_state(rendered_day, rendered_version, rendered_generation, _store):
 def reset_active_selection():
     st.session_state.pop("as_of", None)
     st.session_state.pop("observed_pointer", None)
+
+
+def request_drive_refresh():
+    st.session_state["drive_force_refresh"] = True
 
 
 def quality_report(report):
@@ -217,10 +215,10 @@ def main():
     with st.sidebar:
         render_brand()
     identity = verify_iap_identity(st.context.headers, settings) if settings.cloud_mode else None
-    store = get_store()
+    store = get_store(settings.app_env, drive_cache_namespace() if settings.drive_mode else "")
     if settings.drive_mode:
         with st.spinner("Đang kiểm tra bản chụp Google Drive…"):
-            store.synchronize()
+            store.synchronize(force=st.session_state.pop("drive_force_refresh", False))
     today = vn_today()
     active = store.get_active_version()
     refresh_state(today.isoformat(), active["active_version"] if active else None, active["_generation"] if active else 0, store)
@@ -233,7 +231,7 @@ def main():
         elif settings.drive_mode:
             st.caption("Nguồn dữ liệu · Google Drive")
             st.caption("Bản chụp toàn bộ · Ton_CCDC_ddmmyyyy")
-            st.button("Làm mới dữ liệu", on_click=store.synchronize, kwargs={"force": True}, use_container_width=True)
+            st.button("Làm mới dữ liệu", on_click=request_drive_refresh, use_container_width=True)
         elif settings.community_demo:
             st.info("Demo online · dữ liệu giả · chỉ xem và xuất file.")
         else:
@@ -252,7 +250,10 @@ def main():
     with st.sidebar:
         st.divider()
         st.markdown("### Bộ lọc dữ liệu")
-        cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(active["data_date"]), key="as_of", format="DD/MM/YYYY")
+        # A new widget identity resets the browser as well as Python state.
+        # Clearing only session_state leaves the old date visible in Chrome.
+        cutoff_key = f"as_of_{active['active_version']}_{active['_generation']}"
+        cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(active["data_date"]), key=cutoff_key, format="DD/MM/YYYY")
     version = store.select_version(cutoff.isoformat(), active)
     if not version:
         st.title(page)
@@ -260,7 +261,11 @@ def main():
         return
     df, report, mapping = load_version(version["id"], today.isoformat(), storage_namespace(store), store)
     if settings.drive_mode:
-        st.sidebar.caption("File đang xem: " + report.get("drive", {}).get("source_name", ""))
+        source_info = report.get("drive", {})
+        st.sidebar.caption("File đang xem: " + source_info.get("source_name", ""))
+        st.sidebar.caption("Ngày dữ liệu: " + format_date(version["cutoff"]))
+        st.sidebar.caption("Cập nhật nguồn: " + format_timestamp(source_info.get("source_modified_at_utc", "")))
+        st.sidebar.caption("Đồng bộ gần nhất: " + format_timestamp(store.last_checked))
     if "DỮ LIỆU GIẢ" in report.get("dataset_note", "") and not settings.community_demo:
         st.sidebar.info("Đang xem dữ liệu giả để trình diễn dashboard.")
     for key, column in [("branches", "Chi nhánh"), ("types", "Loại VTTB"), ("statuses", "Tình trạng")]:
