@@ -12,7 +12,7 @@ Không cần tạo Cloud Run, Billing hoặc IAP để chạy bản demo này.
 | Main file path | `streamlit_app.py` |
 | Python version (Advanced settings) | `3.12` |
 | Dependencies | `requirements.txt` ở root, các phiên bản đã pin |
-| Secrets | Không cần cho bản demo dữ liệu giả |
+| Secrets | Theo [Google Drive](GOOGLE_DRIVE.md) để đọc dữ liệu thật; demo không cần |
 
 [Mở màn hình triển khai đã điền repository/branch/entry point](https://share.streamlit.io/deploy?repository=ManhTran35%2Fdemo_ccdc&branch=deploy%2Fstreamlit-community&mainModule=streamlit_app.py).
 
@@ -24,15 +24,20 @@ URL mở màn hình triển khai ở trên không phải URL ứng dụng đang 
 
 ## Hành vi của bản triển khai
 
-`streamlit_app.py` dùng chung giao diện và công thức trong `app.py`/`core.py`.
-Nó chọn môi trường `community-demo`: 1.000 dòng **dữ liệu giả**, chốt 13/10/2026,
+`streamlit_app.py` dùng chung giao diện và công thức trong `app.py`/`core.py`,
+với theme đỏ–trắng theo Viettel Post. Khi Secrets có `data_source = "google_drive"`,
+app đọc thư mục **Data**, file **Ton_CCDC_ddmmyyyy.xlsx** và file tham chiếu qua
+Drive API chỉ đọc. Xem [thiết lập Google Drive](GOOGLE_DRIVE.md). Nguồn Drive
+được kiểm tra mỗi 5 phút hoặc khi bấm Làm mới dữ liệu; ngày chốt lấy từ tên file.
+
+Khi chưa cấu hình nguồn Drive, app chọn `community-demo`: 1.000 dòng **dữ liệu giả**, chốt 13/10/2026,
 không có trang Admin, upload hoặc vai trò tự chọn. Bộ lọc, KPI, bảng, biểu đồ và
 xuất CSV/Excel vẫn hoạt động. Thư mục dữ liệu demo riêng nằm trong thư mục tạm,
 không tái sử dụng `LOCAL_DATA_DIR` hoặc kho dữ liệu thật của local.
 
-Filesystem của Community Cloud không phải kho dữ liệu lâu dài. Dữ liệu giả được
-tạo lại sau reboot; bản này không nhận file thật và không đảm nhiệm nguồn dữ liệu
-chính thức hay lịch sử cập nhật doanh nghiệp.
+Filesystem của Community Cloud không phải kho dữ liệu lâu dài. Trong chế độ demo,
+dữ liệu giả được tạo lại sau reboot. Trong chế độ Drive, file gốc nằm lâu dài ở
+Drive, snapshot Parquet/SQLite là cache và được dựng lại từ nguồn khi cần.
 
 Để dùng dữ liệu nội bộ thật cho 5 người, cần hoàn tất phê duyệt theo đặc tả,
 quyền xem app và kho dữ liệu bền vững riêng. IAP của Cloud Run không áp dụng cho
@@ -44,7 +49,8 @@ của entry point Community Cloud.
 
 Push code mới vào `deploy/streamlit-community`; Community Cloud theo dõi nhánh
 đã chọn. Nếu cần, dùng Manage app → Reboot. Trước khi báo đã triển khai, kiểm tra
-trên URL do Streamlit cấp: ba KPI, thông báo dữ liệu giả, lọc CN01 còn 100 dòng,
+trên URL do Streamlit cấp: ba KPI, nhãn đúng nguồn dữ liệu, bộ lọc và ngày dd/mm/yyyy;
+với demo dữ liệu giả, lọc CN01 còn 100 dòng,
 trang Chi tiết và hai nút tải CSV/Excel sau khi chuẩn bị xuất file. Không có
 trang Admin hoặc ô upload trong bản online.
 

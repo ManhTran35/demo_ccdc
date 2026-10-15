@@ -12,7 +12,7 @@ from core import (
     AGE_GROUPS, DETAIL_COLUMNS, UNKNOWN, UNCLASSIFIED,
     apply_filters, classification_map, export_csv, export_excel, export_frame,
     metrics, overview_tables, review_names,
-    suggestions, vn_today,
+    suggestions, vn_today, display_frame, format_date,
 )
 
 from services.config import Settings, ConfigurationError
@@ -21,21 +21,29 @@ from services.repository import DataRepository, live_quality_report
 from services.storage import ObjectNotFound
 from services.transform import parse_classification, transform_inventory, compare_metrics
 from services.validation import ValidationError
+from services.presentation import apply_theme, render_brand, render_header, age_chart, status_chart
+from services.drive import DriveConfig, DriveClient, DriveRepository, DriveError
 from ui_labels import APP_TITLE, PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN, KPI_USING, KPI_MATERIAL_MISSING, KPI_BROKEN_RATE
 
 logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title=APP_TITLE, page_icon="📦", layout="wide")
-st.markdown("""<style>
-.stApp{background:#f5f7fb}h1,h2,h3{color:#152744}
-[data-testid=stMetric]{background:white;padding:20px;border-radius:14px;border:1px solid #e4e9f2}
-[data-testid=stSidebar]{background:#fff}div.stButton>button[kind=primary]{background:#146e72}
-</style>""", unsafe_allow_html=True)
+apply_theme()
 
 
 @st.cache_resource
 def get_store():
-    store = DataRepository(Settings.from_env())
+    settings = Settings.from_env()
+    if settings.drive_mode:
+        from streamlit.errors import StreamlitSecretNotFoundError
+        try:
+            config = DriveConfig.from_mapping(st.secrets.get("google_drive", {}))
+            account = st.secrets.get("gcp_service_account")
+        except (FileNotFoundError, StreamlitSecretNotFoundError):
+            config, account = DriveConfig(), None
+        client = DriveClient.from_service_account(account, settings.max_upload_mb * 1024 * 1024)
+        return DriveRepository(settings, config, client)
+    store = DataRepository(settings)
     store.seed_synthetic_demo()
     return store
 
@@ -58,6 +66,10 @@ def storage_namespace(store):
 def refresh_state(rendered_day, rendered_version, rendered_generation, _store):
     # Scheduled fragments execute separately from main()'s error boundary.
     try:
+        if _store.settings.drive_mode:
+            _store.synchronize()
+            if _store.last_error:
+                st.warning("Đang giữ bản dữ liệu hợp lệ gần nhất. " + _store.last_error)
         active = _store.get_active_version()
     except Exception as exc:
         logger.error("dashboard_refresh_failed error_type=%s", type(exc).__name__)
@@ -96,7 +108,7 @@ def administration(store, role, today):
     upload_tab, history_tab, mapping_tab = st.tabs(["Nhập & duyệt phiên", "Lịch sử / khôi phục", "Bảng phân loại"])
     with upload_tab:
         st.write("Mỗi file là một bản chụp toàn bộ. Công bố phiên mới không cộng dồn số dòng với phiên cũ.")
-        cutoff = st.date_input("Ngày chốt của file mới", value=today, key="upload_cutoff")
+        cutoff = st.date_input("Ngày chốt của file mới", value=today, key="upload_cutoff", format="DD/MM/YYYY")
         uploaded = st.file_uploader("Chọn file hiện trạng CCDC (.xlsx)", type=["xlsx"])
         st.caption(f"Tối đa {store.settings.max_upload_mb} MB. Số lượng lỗi/cột thiếu chặn công bố. File có công thức hoặc liên kết ngoài cần được xuất thành bản chỉ chứa giá trị.")
         if st.button("Kiểm tra & tạo bản xem trước", disabled=uploaded is None or role == "Người xem", type="primary"):
@@ -132,13 +144,13 @@ def administration(store, role, today):
                     st.error(str(exc) + " File gốc đã được lưu ở staging; phiên hiện hành không thay đổi.")
         pending = [v for v in store.list_versions() if not v["published"]]
         if pending:
-            options = {v["id"]: f"{v['source_filename']} · chốt {v['data_date']} · {v['id']}" for v in pending}
+            options = {v["id"]: f"{v['source_filename']} · chốt {format_date(v['data_date'])} · {v['id']}" for v in pending}
             default = st.session_state.get("preview_id")
             idx = list(options).index(default) if default in options else 0
             pending_id = st.selectbox("Phiên chờ duyệt", list(options), format_func=options.get, index=idx)
             df, report, mapping = load_version(pending_id, today.isoformat(), namespace, store)
             quality_report(report)
-            st.dataframe(df[DETAIL_COLUMNS].head(100), hide_index=True)
+            st.dataframe(display_frame(df[DETAIL_COLUMNS].head(100)), hide_index=True)
             names = review_names(df, mapping)
             st.subheader("Tên chưa phân loại / cần rà soát")
             st.dataframe(names, hide_index=True)
@@ -155,13 +167,13 @@ def administration(store, role, today):
             st.caption("Chưa có phiên chờ duyệt.")
     with history_tab:
         published = [v for v in store.list_versions() if v["published"]]
-        st.dataframe(pd.DataFrame([{"Phiên": v["id"], "Ngày chốt": v["data_date"], "File": v["source_filename"], "Số dòng": v["row_count"], "Hiện hành": v["current"], "Người công bố": v["published_by"]} for v in published]), hide_index=True)
+        st.dataframe(pd.DataFrame([{"Phiên": v["id"], "Ngày chốt": format_date(v["data_date"]), "File": v["source_filename"], "Số dòng": v["row_count"], "Hiện hành": v["current"], "Người công bố": v["published_by"]} for v in published]), hide_index=True)
         if published:
-            labels = {v["id"]: f"{v['data_date']} · {v['source_filename']} · {v['id']}" for v in published}
+            labels = {v["id"]: f"{format_date(v['data_date'])} · {v['source_filename']} · {v['id']}" for v in published}
             selected = st.selectbox("Chọn phiên đã công bố để xem lại", list(labels), format_func=labels.get)
             old, report, mapping = load_version(selected, today.isoformat(), namespace, store)
             st.caption(f"{len(old):,} dòng; tuổi sử dụng tính lại đến {today.strftime('%d/%m/%Y')}.")
-            st.dataframe(old[DETAIL_COLUMNS].head(100), hide_index=True)
+            st.dataframe(display_frame(old[DETAIL_COLUMNS].head(100)), hide_index=True)
             meta = next(v for v in published if v["id"] == selected)
             st.download_button("Tải nguyên file gốc", manager.read_source(selected), file_name=meta["source_filename"])
             active = manager.get_active()
@@ -202,21 +214,28 @@ def administration(store, role, today):
 
 def main():
     settings = Settings.from_env()
+    with st.sidebar:
+        render_brand()
     identity = verify_iap_identity(st.context.headers, settings) if settings.cloud_mode else None
     store = get_store()
+    if settings.drive_mode:
+        with st.spinner("Đang kiểm tra bản chụp Google Drive…"):
+            store.synchronize()
     today = vn_today()
     active = store.get_active_version()
     refresh_state(today.isoformat(), active["active_version"] if active else None, active["_generation"] if active else 0, store)
     with st.sidebar:
-        st.markdown("## 📦 CCDC\nTheo dõi tồn & vòng đời")
         page = st.radio("Điều hướng", [PAGE_OVERVIEW, PAGE_DETAILS] if settings.read_only else [PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN])
         role = "Người xem"
         if identity:
             st.caption("Đã xác minh qua IAP: " + identity.email)
             st.caption("V1-A: cập nhật dữ liệu bằng CLI dành cho Admin được cấp IAM.")
+        elif settings.drive_mode:
+            st.caption("Nguồn dữ liệu · Google Drive")
+            st.caption("Bản chụp toàn bộ · Ton_CCDC_ddmmyyyy")
+            st.button("Làm mới dữ liệu", on_click=store.synchronize, kwargs={"force": True}, use_container_width=True)
         elif settings.community_demo:
             st.info("Demo online · dữ liệu giả · chỉ xem và xuất file.")
-            st.caption("Ngày chốt mẫu: 13/10/2026. Dữ liệu mẫu tự tạo lại khi máy chủ khởi động lại.")
         else:
             role = st.selectbox("Vai trò mô phỏng", ["Người xem", "Người nhập", "Người duyệt"])
             st.caption("Local: mô phỏng, không phải đăng nhập bảo mật.")
@@ -232,34 +251,37 @@ def main():
         st.session_state["observed_pointer"] = observed
     with st.sidebar:
         st.divider()
-        st.markdown("### Bộ lọc dùng chung")
-        cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(active["data_date"]), key="as_of")
+        st.markdown("### Bộ lọc dữ liệu")
+        cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(active["data_date"]), key="as_of", format="DD/MM/YYYY")
     version = store.select_version(cutoff.isoformat(), active)
     if not version:
         st.title(page)
         st.info("Chưa có phiên công bố tính đến ngày đã chọn. Không lấy dữ liệu ở thời điểm tương lai.")
         return
     df, report, mapping = load_version(version["id"], today.isoformat(), storage_namespace(store), store)
-    if "DỮ LIỆU GIẢ" in report.get("dataset_note", ""):
+    if settings.drive_mode:
+        st.sidebar.caption("File đang xem: " + report.get("drive", {}).get("source_name", ""))
+    if "DỮ LIỆU GIẢ" in report.get("dataset_note", "") and not settings.community_demo:
         st.sidebar.info("Đang xem dữ liệu giả để trình diễn dashboard.")
     for key, column in [("branches", "Chi nhánh"), ("types", "Loại VTTB"), ("statuses", "Tình trạng")]:
         if key in st.session_state:
             valid = set(df[column].unique())
             st.session_state[key] = [value for value in st.session_state[key] if value in valid]
     with st.sidebar:
-        branches = st.multiselect("Chi nhánh", sorted(df["Chi nhánh"].unique()), key="branches")
+        branches = st.multiselect("Chi nhánh", sorted(df["Chi nhánh"].unique()), key="branches", placeholder="Tất cả chi nhánh")
         possible_managers = sorted(df.loc[df["Chi nhánh"].isin(branches) if branches else pd.Series(True, index=df.index), "Đơn vị quản lý"].unique())
         if "managers" in st.session_state:
             st.session_state["managers"] = [x for x in st.session_state["managers"] if x in possible_managers]
-        managers = st.multiselect("Đơn vị quản lý", possible_managers, key="managers")
-        types = st.multiselect("Loại VTTB", sorted(set(df["Loại VTTB"]) | {UNCLASSIFIED}), key="types")
-        statuses = st.multiselect("Tình trạng", sorted(df["Tình trạng"].unique()), key="statuses")
-        search = st.text_input("Tìm mã, tên, serial, đơn vị", key="search")
+        managers = st.multiselect("Đơn vị quản lý", possible_managers, key="managers", placeholder="Tất cả đơn vị")
+        types = st.multiselect("Loại VTTB", sorted(set(df["Loại VTTB"]) | {UNCLASSIFIED}), key="types", placeholder="Tất cả loại VTTB")
+        statuses = st.multiselect("Tình trạng", sorted(df["Tình trạng"].unique()), key="statuses", placeholder="Tất cả tình trạng")
+        search = st.text_input("Tìm mã, tên, serial, đơn vị", key="search", placeholder="Nhập mã, tên hoặc serial…")
         issue = st.selectbox("Chỉ báo chất lượng", ["", "Thiếu ngày", "Ngày không hợp lệ", "Ngày ở tương lai", "Serial nghi trùng", UNCLASSIFIED, "Phân loại cần rà soát", "Dòng nghi trùng"], format_func=lambda x: x or "Tất cả", key="issue")
         st.caption("Không chọn giá trị = tất cả. Tìm kiếm và chỉ báo chất lượng cũng áp dụng cho KPI và xuất file.")
     filtered = apply_filters(df, branches, managers, types, statuses, search, issue)
-    st.title(page)
-    st.caption(f"Dữ liệu chốt ngày {date.fromisoformat(version['cutoff']).strftime('%d/%m/%Y')} · Tuổi sử dụng tính đến ngày {today.strftime('%d/%m/%Y')} (Việt Nam) · Phiên {version['id'][:8]}")
+    source = "Google Drive" if settings.drive_mode else "Google Cloud" if settings.cloud_mode else "Dữ liệu mẫu" if settings.community_demo else "Dữ liệu local"
+    render_header(page, version["cutoff"], today, len(filtered), len(df),
+                  filtered["Chi nhánh"].nunique(), filtered["Đơn vị quản lý"].nunique(), source)
     st.write(f"**{len(filtered):,} / {len(df):,} bản ghi** khớp bộ lọc hiện tại.")
     m = metrics(filtered)
     if page == "Tổng quan":
@@ -269,19 +291,24 @@ def main():
         c.metric(KPI_BROKEN_RATE, "—" if m["broken_rate"] is None else f"{m['broken_rate']:.3f}%".replace(".", ","), help=f"Tử số: {m['broken_rows']} bản ghi Thiết bị có tình trạng Hỏng. Mẫu số: {m['device_rows']} bản ghi Thiết bị sau lọc. Không cộng Số lượng hay ĐVT.")
         branch, status, ages, excluded = overview_tables(filtered)
         left, right = st.columns([2, 1])
-        with left:
+        with left, st.container(border=True, key="branch_summary"):
             st.subheader("Số mã VTTB theo chi nhánh và tình trạng")
             st.dataframe(branch, height=360)
-        with right:
+        with right, st.container(border=True, key="status_summary"):
             st.subheader("Số mã VTTB theo tình trạng")
-            st.dataframe(status, height=360)
+            chart_tab, table_tab = st.tabs(["Biểu đồ", "Bảng số liệu"])
+            with chart_tab:
+                st.altair_chart(status_chart(status), use_container_width=True)
+            with table_tab:
+                st.dataframe(status, height=300)
         st.caption("Đếm mã duy nhất trong từng nhóm. Một mã có thể thuộc nhiều chi nhánh hoặc trạng thái; tổng các nhóm có thể lớn hơn số mã duy nhất toàn bộ.")
-        st.subheader("Phân bố thời gian sử dụng · bản ghi")
-        if int(ages.sum()):
-            st.bar_chart(ages, color="#168b82")
-        else:
-            st.info("Không có bản ghi Đang sử dụng với ngày hợp lệ trong bộ lọc hiện tại. Kiểm tra bộ lọc tình trạng/ngày.")
-        st.caption(f"Chỉ lấy bản ghi Đang sử dụng có ngày hợp lệ. {excluded:,} bản ghi Đang sử dụng bị loại vì ngày chưa xác định. Tuổi là số tháng tròn, không phải số lượng thiết bị.")
+        with st.container(border=True, key="age_distribution"):
+            st.subheader("Phân bố thời gian sử dụng · bản ghi")
+            if int(ages.sum()):
+                st.altair_chart(age_chart(ages), use_container_width=True)
+            else:
+                st.info("Không có bản ghi Đang sử dụng với ngày hợp lệ trong bộ lọc hiện tại. Kiểm tra bộ lọc tình trạng/ngày.")
+            st.caption(f"Chỉ lấy bản ghi Đang sử dụng có ngày hợp lệ. {excluded:,} bản ghi Đang sử dụng bị loại vì ngày chưa xác định. Tuổi là số tháng tròn, không phải số lượng thiết bị.")
         with st.expander("Chất lượng của tập dữ liệu đang lọc"):
             for flag in ["Thiếu ngày", "Ngày không hợp lệ", "Ngày ở tương lai", "Serial nghi trùng", UNCLASSIFIED, "Phân loại cần rà soát"]:
                 st.write(f"{flag}: {int(filtered['Vấn đề dữ liệu'].str.contains(flag, regex=False).sum()):,} bản ghi")
@@ -293,7 +320,7 @@ def main():
         pages = max(1, math_ceil(len(filtered), page_size))
         page_no = st.number_input("Trang", min_value=1, max_value=pages, value=1, step=1, key=f"detail_page_{len(filtered)}_{page_size}")
         st.caption(f"Trang {page_no}/{pages}. File tải xuống chứa toàn bộ bản ghi sau lọc, không chỉ trang này.")
-        display = filtered[columns].iloc[(page_no - 1) * page_size:page_no * page_size].copy()
+        display = display_frame(filtered[columns].iloc[(page_no - 1) * page_size:page_no * page_size])
         if "Số tháng sử dụng" in display:
             display["Số tháng sử dụng"] = display["Số tháng sử dụng"].astype("string").fillna(UNKNOWN)
         st.dataframe(display, hide_index=True, height=500)
@@ -321,6 +348,10 @@ if __name__ == "__main__":
         st.stop()
     except ConfigurationError:
         st.error("Cấu hình môi trường chưa hợp lệ. Quản trị viên cần kiểm tra các biến môi trường theo tài liệu triển khai.")
+        st.stop()
+    except DriveError as exc:
+        st.error(str(exc))
+        st.info("Cấu hình nguồn tại Settings → Secrets của Streamlit. Hướng dẫn: docs/GOOGLE_DRIVE.md.")
         st.stop()
     except Exception as exc:
         error_id = uuid.uuid4().hex[:12]

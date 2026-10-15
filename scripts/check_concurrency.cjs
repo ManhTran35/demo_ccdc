@@ -110,7 +110,7 @@ function inspectExport(file, branch, rows, kind) {
     `Missing export columns: ${JSON.stringify(header)}`);
   for (const row of matrix) {
     assert.equal(row[branchColumn], branch, `${kind} branch isolation`);
-    assert.equal(row[dateColumn], expected.data_date, `${kind} immutable snapshot date`);
+    assert.equal(row[dateColumn], expected.data_date.split('-').reverse().join('/'), `${kind} immutable snapshot date`);
     if (kind === 'xlsx') {
       assert.equal(typeof row[codeColumn], 'string', 'Excel codes retain string type');
       assert.equal(typeof row[serialColumn], 'string', 'Excel serials retain string type');

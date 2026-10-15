@@ -1,5 +1,8 @@
 # Kết quả kiểm chứng V1-A — 15/10/2026
 
+Đây là bằng chứng cho phương án Cloud Run V1-A trước đó. Thay đổi Streamlit
+Community Cloud/UI/ngày/Drive được ghi riêng tại [kiểm thử V2](STREAMLIT_V2_VALIDATION.md).
+
 Đã hoàn thiện phần mã nguồn và kiểm thử local bằng dữ liệu giả. **Chưa tạo tài nguyên, build trên Cloud Build, deploy staging/production hoặc cấp quyền IAP thật.** Không có URL online để nghiệm thu ở thời điểm này.
 
 ## Nghiệp vụ và tự động hóa

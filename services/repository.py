@@ -47,7 +47,7 @@ class DataRepository:
         return self.manager.list_versions()
 
     def seed_synthetic_demo(self):
-        if self.settings.cloud_mode:
+        if self.settings.cloud_mode or self.settings.drive_mode:
             return  # No default files or synthetic fallback in production/staging.
         if self.manager.storage.list(""):
             return

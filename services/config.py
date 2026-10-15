@@ -41,18 +41,22 @@ class Settings:
         return self.app_env == "community-demo"
 
     @property
+    def drive_mode(self):
+        return self.app_env == "community-drive"
+
+    @property
     def read_only(self):
-        return self.cloud_mode or self.community_demo
+        return self.cloud_mode or self.community_demo or self.drive_mode
 
     @classmethod
     def from_env(cls, env=None):
         env = os.environ if env is None else env
         app_env = env.get("APP_ENV", "production" if env.get("K_SERVICE") else "local").strip().lower()
-        backend = env.get("STORAGE_BACKEND", "local" if app_env in {"local", "community-demo"} else "gcs").strip().lower()
-        if app_env not in {"local", "community-demo", "staging", "production"} or backend not in {"local", "gcs"}:
+        backend = env.get("STORAGE_BACKEND", "local" if app_env in {"local", "community-demo", "community-drive"} else "gcs").strip().lower()
+        if app_env not in {"local", "community-demo", "community-drive", "staging", "production"} or backend not in {"local", "gcs"}:
             raise ConfigurationError("APP_ENV hoặc STORAGE_BACKEND không hợp lệ.")
-        if app_env == "community-demo" and (backend != "local" or env.get("K_SERVICE")):
-            raise ConfigurationError("Community demo chỉ dùng dữ liệu giả riêng, không dùng Cloud Run/GCS.")
+        if app_env in {"community-demo", "community-drive"} and (backend != "local" or env.get("K_SERVICE")):
+            raise ConfigurationError("Community Cloud dùng bộ nhớ đệm riêng, không dùng Cloud Run/GCS.")
         if (app_env in {"staging", "production"} or env.get("K_SERVICE")) and backend != "gcs":
             raise ConfigurationError("Môi trường cloud bắt buộc dùng GCS, không fallback về file local.")
         if env.get("K_SERVICE") and app_env == "local":
@@ -88,8 +92,8 @@ class Settings:
         if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigurationError("LOG_LEVEL không hợp lệ.")
         # A hosted demo must never reuse the local store, which may hold real uploads.
-        data_dir = (Path(tempfile.gettempdir()) / f"ccdc-community-demo-{os.getpid()}"
-                    if app_env == "community-demo" else Path(env.get("LOCAL_DATA_DIR", str(ROOT / "data" / "runtime-v2"))).expanduser())
+        data_dir = (Path(tempfile.gettempdir()) / f"ccdc-{app_env}-{os.getpid()}"
+                    if app_env in {"community-demo", "community-drive"} else Path(env.get("LOCAL_DATA_DIR", str(ROOT / "data" / "runtime-v2"))).expanduser())
         return cls(app_env=app_env, storage_backend=backend, project_id=project, bucket=bucket,
                    prefix=prefix, local_data_dir=data_dir,
                    max_upload_mb=positive("MAX_UPLOAD_MB", 25), max_uncompressed_mb=positive("MAX_UNCOMPRESSED_MB", 512),

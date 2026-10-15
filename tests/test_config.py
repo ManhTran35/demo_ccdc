@@ -33,6 +33,17 @@ class ConfigurationTests(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaises(ConfigurationError):
                 Settings.from_env({"APP_ENV": "community-demo", **extra})
 
+    def test_community_drive_is_read_only_and_has_separate_cache(self):
+        settings = Settings.from_env({'APP_ENV':'community-drive', 'LOCAL_DATA_DIR':'/real-data'})
+        self.assertTrue(settings.drive_mode)
+        self.assertTrue(settings.read_only)
+        self.assertFalse(settings.community_demo)
+        self.assertNotEqual(settings.local_data_dir,Path('/real-data'))
+        self.assertIn('community-drive',settings.local_data_dir.name)
+        for extra in ({'STORAGE_BACKEND':'gcs'}, {'K_SERVICE':'dashboard'}):
+            with self.subTest(extra=extra),self.assertRaises(ConfigurationError):
+                Settings.from_env({'APP_ENV':'community-drive', **extra})
+
     def test_empty_environment_is_local_and_explicitly_not_cloud(self):
         settings = Settings.from_env({})
         self.assertEqual(settings.app_env, "local")

@@ -2,6 +2,14 @@
 
 Baseline: commit `c59172837920eba11694ba2e56a180017212bdec`. Báo cáo lập trước khi sửa ứng dụng theo đặc tả online 1.0.
 
+Cập nhật theo yêu cầu host **Streamlit Community Cloud**: entry point online
+`streamlit_app.py` chọn demo hoặc nguồn Drive qua Secrets. `services/drive.py`
+đọc thư mục Data và file tham chiếu chỉ qua Drive API, cache Parquet/SQLite và
+giữ bản hợp lệ gần nhất; `services/presentation.py` quản lý theme Viettel Post.
+Ngày văn bản đọc dd/mm/yyyy, lưu ISO nội bộ và xuất/hiển thị dd/mm/yyyy. Xem
+[Google Drive](GOOGLE_DRIVE.md) và [kiểm thử V2](STREAMLIT_V2_VALIDATION.md).
+Các phần dưới ghi nhận baseline và phương án Cloud Run trước đó.
+
 ## Framework và entry point xác minh từ source
 
 `app.py` import Streamlit, khai báo `st.set_page_config`, gọi `main()`. Lệnh thật: `python -m streamlit run app.py`. Đây là ứng dụng Streamlit thuần, có WebSocket. `package.json` chỉ cung cấp test Playwright; không có frontend build bắt buộc, Flask, FastAPI hoặc server Node.

@@ -19,6 +19,7 @@ from services.demo import synthetic_files
 from services.repository import DataRepository
 from services.storage import LocalStorageAdapter
 from services.transform import parse_classification, transform_inventory
+from services.drive import DriveClient
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -100,6 +101,41 @@ class DashboardSmokeTests(unittest.TestCase):
             self.assertEqual(app.sidebar.radio[0].options, ['Tổng quan','Chi tiết dữ liệu'])
             self.assertFalse(any(s.label == 'Vai trò mô phỏng' for s in app.selectbox))
             self.assertEqual(len(app.metric), 3)
+
+    def test_drive_entrypoint_refresh_and_historical_date_use_named_snapshots(self):
+        from test_drive import FakeDrive, remote, FILE_B
+        client = FakeDrive(rows=30)
+        with tempfile.TemporaryDirectory() as directory, patch('services.config.tempfile.gettempdir', return_value=directory), \
+                patch('streamlit.secrets', {'data_source': 'google_drive'}), \
+                patch.object(DriveClient, 'from_service_account', return_value=client):
+            app = AppTest.from_file(str(ROOT / 'streamlit_app.py'), default_timeout=60).run()
+            self.assertFalse(app.exception, [e.message for e in app.exception])
+            self.assertFalse(app.error)
+            self.assertEqual(len(app.metric), 3)
+            self.assertEqual(app.sidebar.radio[0].options, ['Tổng quan', 'Chi tiết dữ liệu'])
+            self.assertTrue(any('Ton_CCDC_13102026' in c.value for c in app.caption))
+            content = synthetic_files(8)[0]
+            client.contents[FILE_B] = content
+            client.files.append(remote(FILE_B, 'Ton_CCDC_14102026.xlsx', content=content))
+            next(b for b in app.button if b.label == 'Làm mới dữ liệu').click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.sidebar.date_input[0].value, date(2026,10,14))
+            self.assertTrue(any('8 / 8 bản ghi' in m.value for m in app.markdown))
+            app.sidebar.date_input[0].set_value(date(2026,10,13)).run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any('30 / 30 bản ghi' in m.value for m in app.markdown))
+            app.sidebar.radio[0].set_value('Chi tiết dữ liệu').run()
+            table = app.dataframe[0].value
+            self.assertEqual(table.iloc[1]['Ngày đưa vào sử dụng'], '02/02/2017')
+
+    def test_configured_drive_without_access_shows_error_instead_of_demo(self):
+        from services.drive import DriveError
+        with patch('streamlit.secrets', {'data_source':'google_drive'}), \
+                patch.object(DriveClient, 'from_service_account', side_effect=DriveError('Chưa có quyền đọc Drive.')):
+            app=AppTest.from_file(str(ROOT/'streamlit_app.py'), default_timeout=60).run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.metric)
+            self.assertTrue(any('quyền đọc Drive' in e.value for e in app.error))
 
     def test_cloud_without_iap_fails_before_opening_repository(self):
         with self.cloud_env(), patch('services.repository.create_storage') as create:

@@ -1,6 +1,8 @@
 # Dashboard tồn CCDC — Streamlit Community Cloud & Local
 
-Host đích theo yêu cầu mới là **Streamlit Community Cloud**. Entry point online là `streamlit_app.py`, dùng chung giao diện, KPI và bộ lọc trong `app.py`. Xem [cấu hình và link triển khai Streamlit](docs/STREAMLIT_DEPLOY.md). Bản demo online dùng dữ liệu giả, chỉ xem và xuất file; local vẫn có luồng nhập/duyệt phiên.
+Host đích là **Streamlit Community Cloud**. Entry point online `streamlit_app.py` dùng giao diện đỏ–trắng theo Viettel Post, cùng KPI và bộ lọc trong `app.py`. Hỗ trợ **Google Drive**: thư mục `Data`, file `Ton_CCDC_ddmmyyyy.xlsx`, chọn bản chụp theo ngày trong tên và dùng file tham chiếu đã cung cấp. Xem [thiết lập Google Drive](docs/GOOGLE_DRIVE.md) và [triển khai Streamlit](docs/STREAMLIT_DEPLOY.md).
+
+Ngày nguồn được đọc **dd/mm/yyyy**, không đoán mm/dd/yyyy; ô chọn ngày, bảng và file xuất dùng dd/mm/yyyy. Ngày lưu nội bộ dùng ISO. Nếu chưa chọn nguồn Drive trong Secrets, app vẫn chạy demo có nhãn dữ liệu giả. Khi đã chọn Drive mà thiếu quyền/file hợp lệ, app báo lỗi, không dùng dữ liệu giả thay thế.
 
 Mã GCS, snapshot Parquet và IAP từ phương án Cloud Run vẫn được giữ, nhưng không phải điều kiện để triển khai demo lên Streamlit Community Cloud. **Chưa có URL ứng dụng Streamlit được xác minh đang chạy.**
 
@@ -28,7 +30,7 @@ python3.12 -m venv .venv
 
 ## Deploy online
 
-Chọn repository `ManhTran35/demo_ccdc`, nhánh `deploy/streamlit-community`, main file `streamlit_app.py`, Python **3.12** tại [Streamlit Community Cloud](https://share.streamlit.io/deploy?repository=ManhTran35%2Fdemo_ccdc&branch=deploy%2Fstreamlit-community&mainModule=streamlit_app.py). Không cần secrets cho demo dữ liệu giả. Chi tiết và giới hạn lưu trữ: [docs/STREAMLIT_DEPLOY.md](docs/STREAMLIT_DEPLOY.md).
+Chọn repository `ManhTran35/demo_ccdc`, nhánh `deploy/streamlit-community`, main file `streamlit_app.py`, Python **3.12** tại [Streamlit Community Cloud](https://share.streamlit.io/deploy?repository=ManhTran35%2Fdemo_ccdc&branch=deploy%2Fstreamlit-community&mainModule=streamlit_app.py). Không cần secrets cho demo dữ liệu giả. Để đọc Drive thật, cấu hình [mẫu Secrets](.streamlit/secrets.example.toml), chia sẻ cả thư mục Data và tham chiếu cho service account quyền Viewer theo [hướng dẫn](docs/GOOGLE_DRIVE.md). Chi tiết và giới hạn lưu trữ: [docs/STREAMLIT_DEPLOY.md](docs/STREAMLIT_DEPLOY.md).
 
 ### Phương án Cloud Run trước đây (tùy chọn, không dùng cho Community Cloud)
 

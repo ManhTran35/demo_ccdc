@@ -40,6 +40,11 @@ def clean(value) -> str:
 
 
 def parse_date(value):
+    """Read source text as day/month/year, never guessing US month/day order.
+
+    ISO is accepted for our internal snapshots; Excel date cells and serial
+    numbers remain supported. Optional time components do not change the day.
+    """
     if value is None or clean(value) == "":
         return None, "Thiếu ngày"
     if isinstance(value, datetime):
@@ -54,12 +59,34 @@ def parse_date(value):
                 pass
         return None, "Ngày không hợp lệ"
     text = clean(value)
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+    match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?", text)
+    if match:
         try:
-            return datetime.strptime(text, fmt).date(), "Hợp lệ"
+            day, month, year, hour, minute, second, micro = match.groups()
+            return datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0),
+                            int(second or 0), int((micro or "0").ljust(6, "0"))).date(), "Hợp lệ"
+        except ValueError:
+            return None, "Ngày không hợp lệ"
+    if re.match(r"^\d{4}-\d{2}-\d{2}(?:$|[T ])", text):
+        try:
+            return datetime.fromisoformat(text).date(), "Hợp lệ"
         except ValueError:
             pass
     return None, "Ngày không hợp lệ"
+
+
+def format_date(value):
+    """Vietnamese display/export date; keep normalized storage in ISO format."""
+    parsed, _ = parse_date(value)
+    return parsed.strftime("%d/%m/%Y") if parsed else ""
+
+
+def display_frame(frame):
+    out = frame.copy()
+    if "Ngày đưa vào sử dụng" in out:
+        values = {value: format_date(value) for value in out["Ngày đưa vào sử dụng"].fillna("").unique()}
+        out["Ngày đưa vào sử dụng"] = out["Ngày đưa vào sử dụng"].fillna("").map(values)
+    return out
 
 
 def full_months(start: date | None, today: date) -> int | None:
@@ -299,11 +326,11 @@ def suggestions(name, mapping, limit=3):
 
 
 def export_frame(df, columns, cutoff, today):
-    out = df[list(columns)].copy()
+    out = display_frame(df[list(columns)])
     if "Số tháng sử dụng" in out:
         out["Số tháng sử dụng"] = out["Số tháng sử dụng"].astype(object).where(out["Số tháng sử dụng"].notna(), UNKNOWN)
-    out["Ngày chốt dữ liệu"] = str(cutoff)
-    out["Ngày tính tuổi sử dụng"] = today.isoformat() if isinstance(today, date) else str(today)
+    out["Ngày chốt dữ liệu"] = format_date(cutoff)
+    out["Ngày tính tuổi sử dụng"] = format_date(today)
     return out
 
 
