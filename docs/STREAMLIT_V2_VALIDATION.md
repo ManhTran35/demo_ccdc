@@ -2,9 +2,25 @@
 
 Nhánh triển khai: `deploy/streamlit-community`; entry point `streamlit_app.py`.
 
+## Sửa lỗi khởi động trên Python 3.14
+
+Đã tái hiện lỗi Altair 5.5.0: `TypedDict(closed=True)` dùng `typing.TypedDict`
+trên Python 3.14 và gây `TypeError: _TypedDictMeta.__new__() got an unexpected
+keyword argument 'closed'`. Cùng lock dependency, Python 3.12 không gặp lỗi.
+
+Biểu đồ được dựng bằng Vega-Lite spec qua `st.vega_lite_chart`, không import
+schema Python của Altair. Giữ dữ liệu, màu, tooltip, thứ tự nhóm tuổi và bố cục.
+Altair vẫn là dependency gián tiếp của Streamlit trong lock, không được app
+import lúc khởi động hoặc vẽ biểu đồ.
+
+Bản sửa được kiểm thử bằng **183 unittest trên Python 3.12.14 và 3.14.8**.
+Test hồi quy đặt Altair ở trạng thái không import được và xác nhận cả hai biểu
+đồ vẫn xuất hiện, ba KPI và thứ tự nhóm tuổi được giữ nguyên. Kiểm tra trình
+duyệt trên server Python 3.14 xác nhận biểu đồ, bộ lọc và CSV/Excel hoạt động.
+
 ## Đã kiểm tra
 
-- **182 Python unittest**: nghiệp vụ cũ, lưu phiên bản, auth/GCS, ngày,
+- **183 Python unittest**: nghiệp vụ cũ, lưu phiên bản, auth/GCS, ngày,
   Google Drive HTTP giả lập, pipeline Excel/Parquet và UI AppTest.
 - Tên `Ton_CCDC_01022026.xlsx` → **01/02/2026**; chọn snapshot theo ngày trong tên,
   bỏ bản tương lai; bản mới thay toàn bộ số dòng. Đổi revision tham chiếu tạo

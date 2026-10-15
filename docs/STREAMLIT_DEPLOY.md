@@ -14,6 +14,12 @@ Không cần tạo Cloud Run, Billing hoặc IAP để chạy bản demo này.
 | Dependencies | `requirements.txt` ở root, các phiên bản đã pin |
 | Secrets | Theo [Google Drive](GOOGLE_DRIVE.md) để đọc dữ liệu thật; demo không cần |
 
+Python **3.12** vẫn là bản khuyến nghị. Bản sửa lỗi import biểu đồ đã được kiểm
+thử thêm trên **Python 3.14.8**. Dashboard dùng Vega-Lite trực tiếp, giữ biểu đồ
+và thứ tự nhóm tuổi; không import schema Altair 5.5 gây lỗi `TypedDict(closed=...)`
+trên Python 3.14. Nếu app đang chạy 3.14, cập nhật code rồi Reboot, không bắt buộc
+đổi Python để xử lý lỗi này. Chi tiết kiểm chứng: [báo cáo V2](STREAMLIT_V2_VALIDATION.md).
+
 [Mở màn hình triển khai đã điền repository/branch/entry point](https://share.streamlit.io/deploy?repository=ManhTran35%2Fdemo_ccdc&branch=deploy%2Fstreamlit-community&mainModule=streamlit_app.py).
 
 Đăng nhập Streamlit Community Cloud bằng tài khoản có quyền truy cập repository,

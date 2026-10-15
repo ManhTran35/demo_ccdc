@@ -6,6 +6,8 @@ from pathlib import Path
 import os
 import runpy
 import tempfile
+import sys
+import json
 import unittest
 from unittest.mock import patch
 
@@ -45,6 +47,21 @@ class DashboardSmokeTests(unittest.TestCase):
         app = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
         self.assertFalse(app.exception, [e.message for e in app.exception])
         return app
+
+    def test_dashboard_renders_both_charts_even_when_altair_cannot_import(self):
+        # Reproduce the unavailable dependency without depending on which Python
+        # version runs this regression. Rendering must not silently drop charts.
+        with patch.dict(sys.modules, {'altair': None}):
+            app = self.app()
+        self.assertFalse(app.error)
+        self.assertEqual(len(app.metric), 3)
+        charts = app.get('arrow_vega_lite_chart')
+        self.assertEqual(len(charts), 2)
+        specs = [json.loads(chart.proto.spec) for chart in charts]
+        self.assertTrue(all(spec['mark']['color'] == '#E51937' for spec in specs))
+        age_spec = next(spec for spec in specs if spec['encoding']['y']['field'] == 'Nhóm thời gian')
+        from core import AGE_GROUPS
+        self.assertEqual(age_spec['encoding']['y']['sort'], AGE_GROUPS)
 
     def cloud_env(self):
         return patch.dict(os.environ, {"APP_ENV":"staging", "STORAGE_BACKEND":"gcs", "GCP_PROJECT_ID":"test-project", "GCS_BUCKET":"test-bucket", "IAP_AUDIENCE":"/test-verified-audience", "ADMIN_EMAILS":"admin@example.com"})

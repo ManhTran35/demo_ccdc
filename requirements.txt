@@ -8,4 +8,3 @@ PyJWT[crypto]==2.10.1
 defusedxml==0.7.1
 pyarrow==26.0.0
 requests==2.34.2
-altair==5.5.0

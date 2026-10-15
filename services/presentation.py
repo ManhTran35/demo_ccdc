@@ -2,7 +2,6 @@
 from html import escape
 
 import streamlit as st
-import altair as alt
 
 from core import format_date, AGE_GROUPS
 
@@ -78,27 +77,34 @@ def render_brand():
 
 
 def age_chart(ages):
-    data = ages.rename("Số bản ghi").rename_axis("Nhóm thời gian").reset_index()
-    return (alt.Chart(data).mark_bar(color=RED, cornerRadiusEnd=4, height=22)
-            .encode(y=alt.Y("Nhóm thời gian:N", sort=AGE_GROUPS,
-                            axis=alt.Axis(title=None, labelLimit=145)),
-                    x=alt.X("Số bản ghi:Q", axis=alt.Axis(title="Bản ghi", tickMinStep=1)),
-                    tooltip=["Nhóm thời gian:N", alt.Tooltip("Số bản ghi:Q", format=",")])
-            .properties(height=270)
-            .configure_view(stroke=None)
-            .configure_axis(gridColor="#EEF0F4", labelColor="#737B8C", titleColor="#737B8C"))
+    return _bar_spec(ages, "Nhóm thời gian", "Số bản ghi", AGE_GROUPS,
+                     label_limit=145, bar_height=22, height=270, title="Bản ghi")
 
 
 def status_chart(status):
-    data = status.rename("Số mã").rename_axis("Tình trạng").reset_index()
-    return (alt.Chart(data).mark_bar(color=RED, cornerRadiusEnd=4, height=28)
-            .encode(y=alt.Y("Tình trạng:N", sort=["Đang sử dụng", "Tốt", "Hỏng", "Tiêu hao đã xử lý", "Xuất cho đơn vị"],
-                            axis=alt.Axis(title=None, labelLimit=120)),
-                    x=alt.X("Số mã:Q", axis=alt.Axis(title="Mã VTTB duy nhất", tickMinStep=1)),
-                    tooltip=["Tình trạng:N", alt.Tooltip("Số mã:Q", format=",")])
-            .properties(height=290)
-            .configure_view(stroke=None)
-            .configure_axis(gridColor="#EEF0F4", labelColor="#737B8C", titleColor="#737B8C"))
+    return _bar_spec(status, "Tình trạng", "Số mã",
+                     ["Đang sử dụng", "Tốt", "Hỏng", "Tiêu hao đã xử lý", "Xuất cho đơn vị"],
+                     label_limit=120, bar_height=28, height=290, title="Mã VTTB duy nhất")
+
+
+def _bar_spec(series, category, measure, order, *, label_limit, bar_height, height, title):
+    # Streamlit renders Vega-Lite directly. Avoid importing Altair's Python
+    # schema wrappers: Altair 5.5 raises TypedDict(closed=...) on Python 3.14.
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "data": {"values": [{category: str(label), measure: int(value)} for label, value in series.items()]},
+        "mark": {"type": "bar", "color": RED, "cornerRadiusEnd": 4, "height": bar_height},
+        "encoding": {
+            "y": {"field": category, "type": "nominal", "sort": list(order),
+                  "axis": {"title": None, "labelLimit": label_limit}},
+            "x": {"field": measure, "type": "quantitative", "axis": {"title": title, "tickMinStep": 1}},
+            "tooltip": [{"field": category, "type": "nominal"},
+                        {"field": measure, "type": "quantitative", "format": ","}],
+        },
+        "height": height,
+        "config": {"view": {"stroke": None}, "axis": {
+            "gridColor": "#EEF0F4", "labelColor": "#737B8C", "titleColor": "#737B8C"}},
+    }
 
 
 def render_header(page, cutoff, today, filtered, total, branches, units, source):

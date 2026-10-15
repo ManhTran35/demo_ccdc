@@ -298,14 +298,14 @@ def main():
             st.subheader("Số mã VTTB theo tình trạng")
             chart_tab, table_tab = st.tabs(["Biểu đồ", "Bảng số liệu"])
             with chart_tab:
-                st.altair_chart(status_chart(status), use_container_width=True)
+                st.vega_lite_chart(status_chart(status), use_container_width=True)
             with table_tab:
                 st.dataframe(status, height=300)
         st.caption("Đếm mã duy nhất trong từng nhóm. Một mã có thể thuộc nhiều chi nhánh hoặc trạng thái; tổng các nhóm có thể lớn hơn số mã duy nhất toàn bộ.")
         with st.container(border=True, key="age_distribution"):
             st.subheader("Phân bố thời gian sử dụng · bản ghi")
             if int(ages.sum()):
-                st.altair_chart(age_chart(ages), use_container_width=True)
+                st.vega_lite_chart(age_chart(ages), use_container_width=True)
             else:
                 st.info("Không có bản ghi Đang sử dụng với ngày hợp lệ trong bộ lọc hiện tại. Kiểm tra bộ lọc tình trạng/ngày.")
             st.caption(f"Chỉ lấy bản ghi Đang sử dụng có ngày hợp lệ. {excluded:,} bản ghi Đang sử dụng bị loại vì ngày chưa xác định. Tuổi là số tháng tròn, không phải số lượng thiết bị.")
