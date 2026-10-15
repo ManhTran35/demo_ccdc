@@ -19,6 +19,20 @@ def cloud_env(**updates):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_community_demo_is_read_only_and_ignores_real_local_directory(self):
+        settings = Settings.from_env({"APP_ENV": "community-demo", "LOCAL_DATA_DIR": "/real-data"})
+        self.assertTrue(settings.community_demo)
+        self.assertTrue(settings.read_only)
+        self.assertFalse(settings.cloud_mode)
+        self.assertEqual(settings.storage_backend, "local")
+        self.assertNotEqual(settings.local_data_dir, Path("/real-data"))
+        self.assertIn("ccdc-community-demo-", settings.local_data_dir.name)
+
+    def test_community_demo_cannot_replace_authenticated_gcs_or_cloud_run(self):
+        for extra in ({"STORAGE_BACKEND": "gcs"}, {"K_SERVICE": "dashboard"}):
+            with self.subTest(extra=extra), self.assertRaises(ConfigurationError):
+                Settings.from_env({"APP_ENV": "community-demo", **extra})
+
     def test_empty_environment_is_local_and_explicitly_not_cloud(self):
         settings = Settings.from_env({})
         self.assertEqual(settings.app_env, "local")

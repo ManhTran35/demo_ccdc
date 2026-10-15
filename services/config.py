@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,14 +36,24 @@ class Settings:
     def cloud_mode(self):
         return self.storage_backend == "gcs"
 
+    @property
+    def community_demo(self):
+        return self.app_env == "community-demo"
+
+    @property
+    def read_only(self):
+        return self.cloud_mode or self.community_demo
+
     @classmethod
     def from_env(cls, env=None):
         env = os.environ if env is None else env
         app_env = env.get("APP_ENV", "production" if env.get("K_SERVICE") else "local").strip().lower()
-        backend = env.get("STORAGE_BACKEND", "local" if app_env == "local" else "gcs").strip().lower()
-        if app_env not in {"local", "staging", "production"} or backend not in {"local", "gcs"}:
+        backend = env.get("STORAGE_BACKEND", "local" if app_env in {"local", "community-demo"} else "gcs").strip().lower()
+        if app_env not in {"local", "community-demo", "staging", "production"} or backend not in {"local", "gcs"}:
             raise ConfigurationError("APP_ENV hoặc STORAGE_BACKEND không hợp lệ.")
-        if (app_env != "local" or env.get("K_SERVICE")) and backend != "gcs":
+        if app_env == "community-demo" and (backend != "local" or env.get("K_SERVICE")):
+            raise ConfigurationError("Community demo chỉ dùng dữ liệu giả riêng, không dùng Cloud Run/GCS.")
+        if (app_env in {"staging", "production"} or env.get("K_SERVICE")) and backend != "gcs":
             raise ConfigurationError("Môi trường cloud bắt buộc dùng GCS, không fallback về file local.")
         if env.get("K_SERVICE") and app_env == "local":
             raise ConfigurationError("Không được bật chế độ local mô phỏng trên Cloud Run.")
@@ -54,7 +65,7 @@ class Settings:
         if backend == "gcs" and (not project or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]", bucket)):
             raise ConfigurationError("Cần GCP_PROJECT_ID và GCS_BUCKET hợp lệ để dùng GCS.")
         audience = env.get("IAP_AUDIENCE", "").strip()
-        if app_env != "local" and not audience:
+        if app_env in {"staging", "production"} and not audience:
             raise ConfigurationError("Môi trường online cần IAP_AUDIENCE được xác minh theo cấu hình IAP thực tế.")
         emails = tuple(sorted({e.strip().casefold() for e in env.get("ADMIN_EMAILS", "").split(",") if e.strip()}))
         if any(not re.fullmatch(r"[^\s@,]+@[^\s@,]+\.[^\s@,]+", e) for e in emails):
@@ -76,8 +87,11 @@ class Settings:
         level = env.get("LOG_LEVEL", "INFO").upper()
         if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigurationError("LOG_LEVEL không hợp lệ.")
+        # A hosted demo must never reuse the local store, which may hold real uploads.
+        data_dir = (Path(tempfile.gettempdir()) / f"ccdc-community-demo-{os.getpid()}"
+                    if app_env == "community-demo" else Path(env.get("LOCAL_DATA_DIR", str(ROOT / "data" / "runtime-v2"))).expanduser())
         return cls(app_env=app_env, storage_backend=backend, project_id=project, bucket=bucket,
-                   prefix=prefix, local_data_dir=Path(env.get("LOCAL_DATA_DIR", str(ROOT / "data" / "runtime-v2"))).expanduser(),
+                   prefix=prefix, local_data_dir=data_dir,
                    max_upload_mb=positive("MAX_UPLOAD_MB", 25), max_uncompressed_mb=positive("MAX_UNCOMPRESSED_MB", 512),
                    max_rows=positive("MAX_ROWS", 250000), max_columns=positive("MAX_COLUMNS", 200),
                    admin_emails=emails, iap_audience=audience, log_level=level, warning_limits=limits)

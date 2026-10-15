@@ -1,6 +1,8 @@
-# Dashboard tồn CCDC — Local & Cloud Run V1-A
+# Dashboard tồn CCDC — Streamlit Community Cloud & Local
 
-Giữ ứng dụng **Streamlit** và các KPI/bộ lọc của demo, bổ sung GCS, snapshot Parquet, publish/rollback có generation precondition và IAP. **Chưa triển khai Google Cloud**; xem trạng thái thực tế tại [docs/VALIDATION_RESULTS.md](docs/VALIDATION_RESULTS.md).
+Host đích theo yêu cầu mới là **Streamlit Community Cloud**. Entry point online là `streamlit_app.py`, dùng chung giao diện, KPI và bộ lọc trong `app.py`. Xem [cấu hình và link triển khai Streamlit](docs/STREAMLIT_DEPLOY.md). Bản demo online dùng dữ liệu giả, chỉ xem và xuất file; local vẫn có luồng nhập/duyệt phiên.
+
+Mã GCS, snapshot Parquet và IAP từ phương án Cloud Run vẫn được giữ, nhưng không phải điều kiện để triển khai demo lên Streamlit Community Cloud. **Chưa có URL ứng dụng Streamlit được xác minh đang chạy.**
 
 ## Quick start local — Windows
 
@@ -25,6 +27,10 @@ python3.12 -m venv .venv
 Ứng dụng không tự load `.env`; `.env.example` là mẫu biến, không chứa credential. Export biến qua shell hoặc cấu hình Cloud Run. Không copy file service-account JSON vào repository.
 
 ## Deploy online
+
+Chọn repository `ManhTran35/demo_ccdc`, nhánh `deploy/streamlit-community`, main file `streamlit_app.py`, Python **3.12** tại [Streamlit Community Cloud](https://share.streamlit.io/deploy?repository=ManhTran35%2Fdemo_ccdc&branch=deploy%2Fstreamlit-community&mainModule=streamlit_app.py). Không cần secrets cho demo dữ liệu giả. Chi tiết và giới hạn lưu trữ: [docs/STREAMLIT_DEPLOY.md](docs/STREAMLIT_DEPLOY.md).
+
+### Phương án Cloud Run trước đây (tùy chọn, không dùng cho Community Cloud)
 
 1. Đọc [audit source](docs/ARCHITECTURE_CURRENT.md); framework thật là Streamlit, không có build Node bắt buộc.
 2. Owner hoàn tất [Project/Billing/bucket/IAM/IAP](docs/CLOUD_SETUP.md), repo private và phê duyệt. Không tự tạo tài nguyên hoặc upload dữ liệu thật khi thiếu phê duyệt.

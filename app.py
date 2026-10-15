@@ -86,8 +86,8 @@ def quality_report(report):
 
 
 def administration(store, role, today):
-    if store.settings.cloud_mode:
-        raise PermissionError("Web online V1-A chỉ cho phép xem; ingestion qua CLI có IAM và ADC.")
+    if store.settings.read_only:
+        raise PermissionError("Phiên bản online này chỉ cho phép xem dữ liệu.")
     manager = store.manager
     actor = "local-admin (mô phỏng)"
     namespace = storage_namespace(store)
@@ -209,11 +209,14 @@ def main():
     refresh_state(today.isoformat(), active["active_version"] if active else None, active["_generation"] if active else 0, store)
     with st.sidebar:
         st.markdown("## 📦 CCDC\nTheo dõi tồn & vòng đời")
-        page = st.radio("Điều hướng", [PAGE_OVERVIEW, PAGE_DETAILS] if settings.cloud_mode else [PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN])
+        page = st.radio("Điều hướng", [PAGE_OVERVIEW, PAGE_DETAILS] if settings.read_only else [PAGE_OVERVIEW, PAGE_DETAILS, PAGE_ADMIN])
         role = "Người xem"
         if identity:
             st.caption("Đã xác minh qua IAP: " + identity.email)
             st.caption("V1-A: cập nhật dữ liệu bằng CLI dành cho Admin được cấp IAM.")
+        elif settings.community_demo:
+            st.info("Demo online · dữ liệu giả · chỉ xem và xuất file.")
+            st.caption("Ngày chốt mẫu: 13/10/2026. Dữ liệu mẫu tự tạo lại khi máy chủ khởi động lại.")
         else:
             role = st.selectbox("Vai trò mô phỏng", ["Người xem", "Người nhập", "Người duyệt"])
             st.caption("Local: mô phỏng, không phải đăng nhập bảo mật.")
@@ -238,7 +241,7 @@ def main():
         return
     df, report, mapping = load_version(version["id"], today.isoformat(), storage_namespace(store), store)
     if "DỮ LIỆU GIẢ" in report.get("dataset_note", ""):
-        st.sidebar.info("Đang xem dữ liệu giả cho demo local.")
+        st.sidebar.info("Đang xem dữ liệu giả để trình diễn dashboard.")
     for key, column in [("branches", "Chi nhánh"), ("types", "Loại VTTB"), ("statuses", "Tình trạng")]:
         if key in st.session_state:
             valid = set(df[column].unique())

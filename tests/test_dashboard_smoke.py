@@ -71,6 +71,26 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertTrue(any("mô phỏng" in i.value for i in app.info))
 
+    def test_community_entry_point_is_synthetic_read_only_and_preserves_filters_exports(self):
+        with tempfile.TemporaryDirectory() as directory, patch('services.config.tempfile.gettempdir', return_value=directory):
+            app = AppTest.from_file(str(ROOT / 'streamlit_app.py'), default_timeout=60).run()
+            self.assertFalse(app.exception, [e.message for e in app.exception])
+            self.assertEqual(app.sidebar.radio[0].options, ['Tổng quan', 'Chi tiết dữ liệu'])
+            self.assertFalse(any(s.label == 'Vai trò mô phỏng' for s in app.selectbox))
+            self.assertEqual(len(app.metric), 3)
+            self.assertTrue(any('1,000 / 1,000' in x.value for x in app.markdown))
+            self.assertTrue(any('dữ liệu giả' in x.value for x in app.info))
+            app.sidebar.multiselect[0].set_value(['CN01']).run()
+            self.assertTrue(any('100 / 1,000' in x.value for x in app.markdown))
+            app.sidebar.radio[0].set_value('Chi tiết dữ liệu').run()
+            self.assertFalse(app.exception)
+            next(b for b in app.button if 'Chuẩn bị CSV' in b.label).click().run()
+            self.assertFalse(app.exception)
+            self.assertEqual(len(app.get('download_button')), 2)
+            self.assertFalse(app.get('file_uploader'))
+            self.assertEqual(len(self.repo.read_active_dataset(vn_today())), 1000)
+
+
     def test_cloud_has_no_admin_upload_or_simulated_role_and_no_excel_parse(self):
         with self.cloud_env(), patch('services.repository.create_storage', return_value=LocalStorageAdapter(self.temp.name)), \
              patch('services.auth.verify_iap_identity', return_value=Identity('viewer@example.com','subject',False)), \
