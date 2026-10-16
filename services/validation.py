@@ -1,12 +1,14 @@
 """Bounded, non-executing XLSX validation before openpyxl sees an upload.
 
 Formula cells are deliberately rejected: cached values may be absent or stale.
-An administrator must export a values-only workbook, retaining the original file
-in staging for audit. This module never evaluates or rewrites Excel formulas.
+Formatting/dropdown expressions are metadata, never values consumed by Pandas.
+This module never evaluates or rewrites Excel formulas.
 """
 from __future__ import annotations
 
 import io
+import logging
+import posixpath
 import re
 import stat
 import zipfile
@@ -14,6 +16,9 @@ from xml.etree.ElementTree import ParseError
 
 from defusedxml.ElementTree import iterparse
 from defusedxml.common import DefusedXmlException
+
+logger = logging.getLogger(__name__)
+XML_OPTIONS = dict(forbid_dtd=True, forbid_entities=True, forbid_external=True)
 
 
 class ValidationError(ValueError):
@@ -30,8 +35,50 @@ def _setting(settings, name, default):
     return getattr(settings, name, default) if settings is not None else default
 
 
-def _reject(message, code):
-    raise ValidationError(message, code=code)
+def _reject(message, code, **diagnostic):
+    report = {"valid": False, "row_count": 0, "errors": [message], "code": code, **diagnostic}
+    raise ValidationError(message, code=code, report=report)
+
+
+def _label(value, limit=180):
+    return "".join(char for char in str(value) if char.isprintable())[:limit]
+
+
+def _sheet_names(archive, names):
+    """Resolve worksheet labels without loading cell data or following links."""
+    sheets, targets = [], {}
+    with archive.open("xl/workbook.xml") as stream:
+        for _, element in iterparse(stream, events=("end",), **XML_OPTIONS):
+            if element.tag.rsplit("}", 1)[-1] == "sheet":
+                rid = element.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+                sheets.append((element.attrib.get("name", ""), rid))
+            element.clear()
+    if "xl/_rels/workbook.xml.rels" in names:
+        with archive.open("xl/_rels/workbook.xml.rels") as stream:
+            for _, element in iterparse(stream, events=("end",), **XML_OPTIONS):
+                if element.tag.rsplit("}", 1)[-1] == "Relationship":
+                    target = element.attrib.get("Target", "")
+                    targets[element.attrib.get("Id")] = posixpath.normpath(
+                        target.lstrip("/") if target.startswith("/") else posixpath.join("xl", target))
+                element.clear()
+    return [name for name, _ in sheets], {targets[rid]: name for name, rid in sheets if rid in targets}
+
+
+def _static_builtin_name(name, text, sheets):
+    """Only Excel's filter/print metadata with existing, internal static ranges."""
+    if name.casefold() not in {"_xlnm._filterdatabase", "_xlnm.print_area", "_xlnm.print_titles"}:
+        return False
+    if not sheets or not text:
+        return False
+    labels = []
+    for sheet in sheets:
+        labels.append(re.escape("'" + sheet.replace("'", "''") + "'"))
+        if re.fullmatch(r"[\w.]+", sheet):
+            labels.append(re.escape(sheet))
+    cell = r"\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}"
+    area = rf"(?:{cell}(?::{cell})?|\$?[A-Z]{{1,3}}:\$?[A-Z]{{1,3}}|\$?[1-9][0-9]{{0,6}}:\$?[1-9][0-9]{{0,6}})"
+    term = rf"(?:{'|'.join(labels)})!{area}"
+    return re.fullmatch(rf"{term}(?:,{term})*", text.strip()) is not None
 
 
 def _column_index(cell_reference: str) -> int:
@@ -44,7 +91,7 @@ def _column_index(cell_reference: str) -> int:
     return result
 
 
-def validate_workbook(content: bytes, filename: str, settings=None, classification: bool = False) -> None:
+def _validate_workbook(content: bytes, filename: str, settings=None, classification: bool = False) -> None:
     """Validate package structure/security/dimensions without loading cells in RAM.
 
     Semantic/schema checks occur in transform_inventory / parse_classification,
@@ -91,6 +138,7 @@ def validate_workbook(content: bytes, filename: str, settings=None, classificati
                     _reject("Không nhận Excel có macro, liên kết ngoài hoặc đối tượng nhúng.", "active_content")
             if not {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}.issubset(names):
                 _reject("Thiếu thành phần bắt buộc của định dạng XLSX.", "invalid_xlsx_package")
+            sheet_order, sheets = _sheet_names(archive, names)
             worksheet_count = 0
             for member in members:
                 lower = member.filename.casefold()
@@ -101,16 +149,35 @@ def validate_workbook(content: bytes, filename: str, settings=None, classificati
                 if worksheet_count > 128:
                     _reject("Excel có quá nhiều worksheet.", "worksheet_limit")
                 row_count = 0
+                stack = []
                 with archive.open(member) as stream:
                     # defusedxml rejects declarations/entities before expansion,
                     # including UTF-16 XML and declarations across buffer boundaries.
-                    events = iterparse(stream, events=("end",), forbid_dtd=True,
-                                       forbid_entities=True, forbid_external=True)
-                    for _, element in events:
+                    events = iterparse(stream, events=("start", "end"), **XML_OPTIONS)
+                    for event, element in events:
                         tag = element.tag.rsplit("}", 1)[-1]
                         lowered_tag = tag.casefold()
+                        if event == "start":
+                            stack.append((lowered_tag, dict(element.attrib)))
+                            continue
                         if lowered_tag in {"f", "formula", "formula1", "formula2", "definedname"}:
-                            _reject("Excel có công thức/defined name. Hãy xuất bản chỉ có giá trị (values-only) rồi thử lại; không dùng giá trị cache của công thức.", "formula_not_allowed")
+                            cell = next((attrs.get("r", "") for parent, attrs in reversed(stack[:-1]) if parent == "c"), "")
+                            metadata = lowered_tag != "definedname" and not cell and any(parent in {"conditionalformatting", "datavalidation"} for parent, _ in stack[:-1])
+                            builtin = lowered_tag == "definedname" and _static_builtin_name(
+                                element.attrib.get("name", ""), element.text or "", sheet_order)
+                            if not metadata and not builtin:
+                                sheet = sheets.get(member.filename, "")
+                                defined_name = element.attrib.get("name", "") if lowered_tag == "definedname" else ""
+                                if defined_name:
+                                    index = element.attrib.get("localSheetId", "")
+                                    sheet = sheet_order[int(index)] if index.isdigit() and int(index) < len(sheet_order) else "toàn workbook"
+                                location = f"sheet '{_label(sheet)}'" if sheet else member.filename
+                                location += f", ô {_label(cell)}" if cell else ""
+                                location += f", defined name '{_label(defined_name)}'" if defined_name else ""
+                                _reject(f"{location}: có công thức {'ô dữ liệu' if cell else 'hoặc biểu thức tên'}. Hãy xuất bản chỉ có giá trị (values-only); không dùng giá trị cache của công thức.",
+                                        "formula_not_allowed", sheet=_label(sheet), cell=_label(cell),
+                                        defined_name=_label(defined_name), part=member.filename,
+                                        kind="cell_formula" if cell else "named_expression")
                         if lowered_tag in {"externalreference", "externallink", "ddelink", "ddelinks", "olelink", "oleobject"}:
                             _reject("Không nhận liên kết ngoài, DDE hoặc đối tượng OLE trong Excel.", "external_content")
                         if lowered_tag == "relationship" and (element.attrib.get("TargetMode", "").strip().casefold() == "external"
@@ -148,6 +215,7 @@ def validate_workbook(content: bytes, filename: str, settings=None, classificati
                                 row = int(re.search(r"[0-9]+$", reference).group())
                                 if column > max_columns or row > max_rows + 30:
                                     _reject("Excel vượt giới hạn dòng/cột đã cấu hình.", "dimension_limit")
+                        stack.pop()
                         element.clear()
             if not worksheet_count:
                 _reject("Excel không có worksheet dữ liệu.", "missing_worksheet")
@@ -155,3 +223,16 @@ def validate_workbook(content: bytes, filename: str, settings=None, classificati
         raise
     except (DefusedXmlException, ParseError, zipfile.BadZipFile, RuntimeError, EOFError, ValueError, OSError):
         _reject("Gói Excel hoặc XML bị hỏng/không an toàn; không thể xử lý.", "invalid_xml_or_archive")
+
+
+def validate_workbook(content: bytes, filename: str, settings=None, classification: bool = False) -> None:
+    logger.info("excel_validation_started file=%s classification=%s bytes=%s", _label(filename), classification, len(content) if isinstance(content, bytes) else 0)
+    try:
+        _validate_workbook(content, filename, settings, classification)
+    except ValidationError as exc:
+        message = f"File '{_label(filename)}': {exc}"
+        report = dict(exc.report, filename=_label(filename), errors=[message])
+        logger.warning("excel_validation_rejected file=%s code=%s sheet=%s cell=%s defined_name=%s part=%s",
+                       _label(filename), exc.code, report.get("sheet", ""), report.get("cell", ""), report.get("defined_name", ""), report.get("part", ""))
+        raise ValidationError(message, code=exc.code, report=report) from None
+    logger.info("excel_validation_succeeded file=%s", _label(filename))

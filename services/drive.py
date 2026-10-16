@@ -9,11 +9,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
 import json
+import logging
 import re
 import threading
 import time
 
 from core import vn_today
+from services.config import Settings, create_storage
+from services.drive_cache import DriveSnapshotCache
 from services.repository import DataRepository
 from services.storage import PreconditionFailed
 from services.transform import parse_classification, transform_inventory
@@ -26,7 +29,8 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 SHEET = "application/vnd.google-apps.spreadsheet"
 FOLDER = "application/vnd.google-apps.folder"
 FIELDS = "id,name,mimeType,modifiedTime,version,md5Checksum,size"
-NORMALIZATION_REVISION = "day-first-v2"
+NORMALIZATION_REVISION = "day-first-v3-validation"
+logger = logging.getLogger(__name__)
 
 
 class DriveError(ValueError):
@@ -144,7 +148,7 @@ class DriveClient:
                 raise DriveError("Không export được Google Sheets. Kiểm tra quyền đọc và giới hạn export của Google; có thể thay bằng file XLSX chỉ chứa giá trị.")
             if status in {401, 403, 404}:
                 raise DriveError("Không có quyền đọc Drive hoặc file không tồn tại. Kiểm tra Drive API, ID và quyền Viewer của service account trên cả Data lẫn file tham chiếu.")
-            raise DriveError("Google Drive tạm thời không đáp ứng hoặc hết hạn mức. Giữ bản dữ liệu đang xem và thử lại sau.")
+            raise DriveError("Google Drive tạm thời không đáp ứng hoặc hết hạn mức. Thử làm mới dữ liệu sau.")
         return response
 
     def _json(self, path, params):
@@ -246,12 +250,12 @@ class DriveClient:
                 chunks.append(chunk)
             content = b"".join(chunks)
             if file.checksum and hashlib.md5(content).hexdigest() != file.checksum:
-                raise DriveError("Checksum file Drive đã đổi. Giữ bản hiện hành và đồng bộ lại.")
+                raise DriveError("Checksum file Drive đã đổi. Đợi upload hoàn tất rồi làm mới dữ liệu.")
             return content
         except DriveError:
             raise
         except Exception:
-            raise DriveError("Tải file Drive bị gián đoạn. Bản hiện hành được giữ nguyên.") from None
+            raise DriveError("Tải file Drive bị gián đoạn. Hãy làm mới dữ liệu để thử lại.") from None
         finally:
             response.close()
 
@@ -259,50 +263,78 @@ class DriveClient:
 class DriveRepository(DataRepository):
     """Validate changed source pairs once, retain last good snapshot on failure."""
     def __init__(self, settings, config, client, storage=None):
-        super().__init__(settings, storage)
+        self.settings = settings or Settings.from_env()
+        self.manager = DriveSnapshotCache(storage if storage is not None else create_storage(self.settings))
         self.config, self.client = config, client
         self.last_error = ""
         self.last_checked = ""
+        self.last_failures = []
         self.files = []
         self.reference = None
         self._next_check = 0
         self._lock = threading.RLock()
         self._versions = {}
+        self._classification = None
 
     def _fingerprint(self, inventory, reference):
         source = [NORMALIZATION_REVISION, inventory.stamp, reference.stamp]
         return hashlib.sha256(json.dumps(source, ensure_ascii=False).encode()).hexdigest()
 
-    def _prepare(self, inventory, reference, publish):
+    def _download(self, file, role):
+        logger.info("drive_download_started role=%s file=%r file_id=%s revision=%r", role, file.name, file.id, file.version)
+        content = self.client.download(file)
+        logger.info("drive_download_completed role=%s file=%r bytes=%s", role, file.name, len(content))
+        return content
+
+    @staticmethod
+    def _validation_failure(exc, file, role):
+        message = str(exc) if exc.report.get("filename") else f"File '{file.name}': {exc}"
+        return ValidationError(message, code=exc.code, report=dict(
+            exc.report, filename=file.name, file_id=file.id, source_role=role, errors=[message]))
+
+    def _load_classification(self, reference):
+        if self._classification and self._classification[0] == reference.stamp:
+            return self._classification[1:]
+        content = self._download(reference, "reference")
+        if self.client.metadata(reference.id).stamp != reference.stamp:
+            raise DriveError("File tham chiếu đang được cập nhật. Đợi upload hoàn tất rồi làm mới dữ liệu.")
+        filename = reference.name if reference.name.lower().endswith(".xlsx") else reference.name + ".xlsx"
+        try:
+            mapping, report = parse_classification(content, self.settings, filename)
+        except ValidationError as exc:
+            raise self._validation_failure(exc, reference, "reference") from None
+        self._classification = (reference.stamp, content, mapping, report)
+        return content, mapping, report
+
+    def _prepare(self, inventory, reference, activate):
         fingerprint = self._fingerprint(inventory, reference)
-        if not publish and fingerprint in self._versions:
+        if not activate and fingerprint in self._versions:
             return self._versions[fingerprint]
-        content = self.client.download(inventory)
-        classification = self.client.download(reference)
+        classification, mapping, _ = self._load_classification(reference)
+        content = self._download(inventory, "inventory")
         # Refuse a mixed revision if either file changed during the download.
         if self.client.metadata(inventory.id).stamp != inventory.stamp or self.client.metadata(reference.id).stamp != reference.stamp:
-            raise DriveError("File Drive đang được cập nhật. Giữ bản hiện hành và đồng bộ lại sau khi upload xong.")
-        mapping, class_report = parse_classification(classification, self.settings)
+            raise DriveError("File Drive đang được cập nhật. Đợi upload hoàn tất rồi làm mới dữ liệu.")
         filename = inventory.name if inventory.name.lower().endswith(".xlsx") else inventory.name + ".xlsx"
-        result = transform_inventory(content, mapping, settings=self.settings, filename=filename)
-        actor = "google-drive-sync (read-only)"
-        stage_class = self.manager.stage_upload(classification, "classification.xlsx", actor)
-        self.manager.record_stage_validation(stage_class["id"], class_report)
-        result.report["classification_stage_id"] = stage_class["id"]
+        logger.info("drive_processing_started file=%r data_date=%s", inventory.name, inventory.data_date)
+        try:
+            result = transform_inventory(content, mapping, settings=self.settings, filename=filename)
+        except ValidationError as exc:
+            raise self._validation_failure(exc, inventory, "inventory") from None
+        logger.info("drive_processing_completed file=%r rows=%s", inventory.name, result.report["row_count"])
         result.report["drive"] = {"fingerprint": fingerprint, "inventory_id": inventory.id,
                                   "reference_id": reference.id, "source_name": inventory.name,
+                                  "reference_name": reference.name,
                                   "source_modified_at_utc": inventory.modified_time,
                                   "loaded_at_utc": datetime.now(timezone.utc).isoformat(),
                                   "date_format": "dd/mm/yyyy", "normalization_revision": NORMALIZATION_REVISION}
-        stage = self.manager.stage_upload(content, filename, actor)
-        self.manager.record_stage_validation(stage["id"], result.report)
         active = self.get_active_version()
         generation = active["_generation"] if active else 0
-        preview = self.manager.prepare_version(stage, result.parquet_bytes, mapping, result.report, result.metrics,
-                                               inventory.data_date.isoformat(), actor, generation, note="Nguồn Google Drive · bản chụp toàn bộ")
-        if publish:
-            self.manager.commit(preview["id"], preview["confirmation_token"], actor, generation)
-        version = {"id": preview["id"], "cutoff": inventory.data_date.isoformat()}
+        self.manager.materialize(fingerprint, inventory.name, inventory.data_date.isoformat(), content, classification, result, mapping)
+        if activate:
+            self.manager.activate(fingerprint, generation)
+            logger.info("drive_cache_activated file=%r data_date=%s version=%s rows=%s", inventory.name, inventory.data_date, fingerprint, result.report["row_count"])
+        version = {"id": fingerprint, "cutoff": inventory.data_date.isoformat()}
         self._versions[fingerprint] = version
         return version
 
@@ -310,7 +342,10 @@ class DriveRepository(DataRepository):
         with self._lock:
             if not force and time.monotonic() < self._next_check:
                 return
-            self._next_check = time.monotonic() + self.config.refresh_seconds
+            self.last_checked = datetime.now(timezone.utc).isoformat()
+            self.last_error = ""
+            self.last_failures = []
+            logger.info("drive_sync_started force=%s has_active=%s", force, bool(self.get_active_version()))
             try:
                 if force and hasattr(self.client, "clear_cache"):
                     self.client.clear_cache()
@@ -318,31 +353,47 @@ class DriveRepository(DataRepository):
                 eligible = [f for f in files if f.data_date <= vn_today()]
                 if not eligible:
                     raise DriveError("Chưa có bản chụp hợp lệ trong Data. Dùng tên Ton_CCDC_ddmmyyyy.xlsx, ví dụ Ton_CCDC_15102026.xlsx; không dùng ngày tương lai.")
-                latest = max(eligible, key=lambda f: (f.data_date, f.modified_time, f.version, f.id))
+                eligible.sort(key=lambda f: (f.data_date, f.modified_time, f.version, f.id), reverse=True)
+                logger.info("drive_inventory_listed total=%s eligible=%s latest=%r", len(files), len(eligible), eligible[0].name)
                 reference = self.client.metadata(self.config.reference_file_id)
                 self.files, self.reference = eligible, reference
-                fingerprint = self._fingerprint(latest, reference)
                 active = self.get_active_version()
                 previous = self.manager.read_validation(active["active_version"]).get("drive", {}) if active else {}
-                if fingerprint != previous.get("fingerprint"):
-                    self._prepare(latest, reference, publish=True)
-                self.last_error = ""
+                # With an accepted cache, preserve that exact snapshot on error.
+                # After reboot, recover by revalidating durable Drive history.
+                candidates = eligible[:1] if active else eligible
+                for candidate in candidates:
+                    if self._fingerprint(candidate, reference) == previous.get("fingerprint"):
+                        logger.info("drive_cache_unchanged file=%r", candidate.name)
+                        break
+                    try:
+                        self._prepare(candidate, reference, activate=True)
+                        break
+                    except ValidationError as exc:
+                        self.last_failures.append(exc.report)
+                        logger.warning("drive_candidate_rejected file=%r role=%s code=%s sheet=%r cell=%s",
+                                       exc.report.get("filename"), exc.report.get("source_role"), exc.code,
+                                       exc.report.get("sheet", ""), exc.report.get("cell", ""))
+                        if active or exc.report.get("source_role") == "reference":
+                            break  # All inventory candidates share this reference.
+                if self.last_failures:
+                    messages = [report["errors"][0] for report in self.last_failures[:3]]
+                    self.last_error = "\n\n".join(messages)
+                    if len(self.last_failures) > 3:
+                        self.last_error += f"\n\nCòn {len(self.last_failures) - 3} file không hợp lệ; xem logs."
                 self.last_checked = getattr(self.client, "last_listed_at", "") or datetime.now(timezone.utc).isoformat()
-                # A successful poll must not run just before cache_data expires
-                # and then defer a fresh index for another full TTL.
-                self._next_check = time.monotonic() + self.config.refresh_seconds
             except (DriveError, ValidationError) as exc:
                 self.last_error = str(exc)
-                if not self.get_active_version():
-                    raise DriveError(self.last_error) from None
             except PreconditionFailed:
-                self.last_error = "Bản chụp vừa được phiên đồng bộ khác cập nhật. Đang giữ bản đã xác minh; thử lại sau."
-                if not self.get_active_version():
-                    raise DriveError(self.last_error) from None
-            except Exception:
-                self.last_error = "Không đồng bộ được Drive. Bản dữ liệu đã xác minh được giữ nguyên; kiểm tra cấu hình và kết nối."
-                if not self.get_active_version():
-                    raise DriveError(self.last_error) from None
+                self.last_error = "Bản chụp vừa được phiên đồng bộ khác cập nhật. Hãy làm mới dữ liệu."
+            except Exception as exc:
+                logger.error("drive_sync_failed error_type=%s", type(exc).__name__)
+                self.last_error = "Không đồng bộ được Drive. Kiểm tra cấu hình, kết nối và logs ứng dụng."
+            finally:
+                self._next_check = time.monotonic() + self.config.refresh_seconds
+                logger.log(logging.WARNING if self.last_error else logging.INFO,
+                           "drive_sync_completed has_active=%s rejected=%s has_error=%s",
+                           bool(self.get_active_version()), len(self.last_failures), bool(self.last_error))
 
     def select_version(self, cutoff, active=None):
         with self._lock:
@@ -356,4 +407,4 @@ class DriveRepository(DataRepository):
                 return None
             selected = max(candidates, key=lambda f: (f.data_date, f.modified_time, f.version, f.id))
             # Browsing an older file never changes the shared active pointer.
-            return self._prepare(selected, self.reference, publish=False)
+            return self._prepare(selected, self.reference, activate=False)

@@ -167,6 +167,46 @@ class DashboardSmokeTests(unittest.TestCase):
             self.assertFalse(app.metric)
             self.assertTrue(any('quyền đọc Drive' in e.value for e in app.error))
 
+    def test_drive_initial_invalid_and_repeated_run_never_claim_existing_snapshot(self):
+        from test_drive import FakeDrive, FILE_A, remote
+        from test_drive_loader import secrets
+        client = FakeDrive()
+        client.contents[FILE_A] = b'broken workbook'
+        with tempfile.TemporaryDirectory() as directory, patch('services.config.tempfile.gettempdir', return_value=directory), \
+                patch('streamlit.secrets', secrets()), patch.object(DriveClient, 'from_service_account', return_value=client):
+            app = AppTest.from_file(str(ROOT/'streamlit_app.py'), default_timeout=60).run()
+            for _ in range(2):
+                self.assertFalse(app.exception)
+                self.assertFalse(app.metric)
+                self.assertTrue(any('Chưa có bản dữ liệu hợp lệ' in e.value and 'Ton_CCDC_13102026.xlsx' in e.value for e in app.error))
+                self.assertFalse(any('giữ bản' in w.value or 'đã xác minh gần nhất' in w.value or 'Admin cần' in w.value for w in app.warning))
+                self.assertTrue(any(b.label == 'Làm mới dữ liệu' for b in app.button))
+                app.run()
+            content = synthetic_files(8)[0]
+            client.contents[FILE_A] = content
+            client.files = [remote(FILE_A, 'Ton_CCDC_13102026.xlsx', version='2', content=content)]
+            next(b for b in app.button if b.label == 'Làm mới dữ liệu').click().run()
+            self.assertFalse(app.error)
+            self.assertEqual(len(app.metric), 3)
+            self.assertTrue(any('8 / 8 bản ghi' in m.value for m in app.markdown))
+
+    def test_drive_invalid_latest_with_history_keeps_real_kpis_and_specific_warning(self):
+        from test_drive import FakeDrive, FILE_B, remote
+        from test_drive_loader import secrets
+        client = FakeDrive()
+        client.contents[FILE_B] = b'broken workbook'
+        client.files.append(remote(FILE_B, 'Ton_CCDC_14102026.xlsx', content=client.contents[FILE_B]))
+        with tempfile.TemporaryDirectory() as directory, patch('services.config.tempfile.gettempdir', return_value=directory), \
+                patch('streamlit.secrets', secrets()), patch.object(DriveClient, 'from_service_account', return_value=client):
+            app = AppTest.from_file(str(ROOT/'streamlit_app.py'), default_timeout=60).run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.error)
+            self.assertTrue(any('đã xác minh gần nhất' in w.value and 'Ton_CCDC_14102026.xlsx' in w.value for w in app.warning))
+            self.assertTrue(any('30 / 30 bản ghi' in m.value for m in app.markdown))
+            self.assertEqual(len(app.metric), 3)
+            app.sidebar.date_input[0].set_value(date(2026,10,14)).run()
+            self.assertFalse(app.exception)
+
     def test_cloud_without_iap_fails_before_opening_repository(self):
         with self.cloud_env(), patch('services.repository.create_storage') as create:
             app = self.app()

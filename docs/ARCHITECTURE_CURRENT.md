@@ -1,5 +1,9 @@
 # Rà soát kiến trúc hiện tại — 15/10/2026
 
+Cập nhật 16/10/2026: Drive dùng `DriveSnapshotCache` riêng, tự validate/nạp và
+phục hồi từ file lịch sử; không dùng staging/publish của `VersionManager`.
+Xem [chẩn đoán pipeline](DRIVE_PIPELINE_FIX.md) cho cơ chế hiện hành và kiểm thử.
+
 Baseline: commit `c59172837920eba11694ba2e56a180017212bdec`. Báo cáo lập trước khi sửa ứng dụng theo đặc tả online 1.0.
 
 Cập nhật theo yêu cầu host **Streamlit Community Cloud**: entry point online

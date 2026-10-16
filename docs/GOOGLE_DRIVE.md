@@ -91,8 +91,14 @@ export đối với Sheets gốc; lỗi export được báo và không đổi b
 
 Nguồn mới qua kiểm tra ZIP/XML, dung lượng, template, số lượng và ngày; đọc lại
 metadata để tránh trộn file đang upload. Khi hợp lệ mới thay snapshot đang xem.
-File có công thức/defined names/links không được bộ kiểm tra chấp nhận: dùng
-bản **chỉ chứa giá trị** để bảo đảm không đọc cached formula thiếu hoặc lỗi.
+**Công thức ô dữ liệu**, kể cả trên sheet ẩn/không được chọn, vẫn bị chặn;
+không dùng cached formula values. Lỗi chỉ rõ tên file, sheet và ô đầu tiên.
+Conditional formatting và dropdown là metadata không được thực thi hoặc dùng
+làm dữ liệu; chúng không khiến một bảng giá trị hợp lệ bị từ chối. Chỉ cho phép
+defined names tích hợp `_xlnm._FilterDatabase`, `_xlnm.Print_Area`,
+`_xlnm.Print_Titles` khi đích là vùng tĩnh trong sheet tồn tại của chính workbook.
+Named expressions khác, macro, liên kết ngoài, DDE và OLE vẫn bị chặn.
+Không tự tính, sửa công thức hoặc chuyển cached values thành dữ liệu.
 File tham chiếu giữ sheet `Chi_tiet` và template cột của `Phan_loai_VTTB.xlsx`.
 
 Ngày trong ô Excel đọc **ngày/tháng/năm**: `01/02/2026` luôn là 1 tháng 2.
@@ -101,11 +107,34 @@ trống hoặc tương lai được đánh dấu để rà soát, không đoán 
 không biến thành 0 tháng. Bảng, ô chọn ngày và file CSV/Excel xuất ra hiển thị
 `dd/mm/yyyy`; snapshot Parquet dùng ISO nội bộ để tính tuổi và so sánh ổn định.
 
-Drive là nơi lưu file gốc lâu dài. SQLite, Parquet và lịch sử đã đọc trên máy
-Streamlit chỉ là **cache**, có thể được tạo lại sau reboot. Việc đọc ngày cũ
-tải bản chụp cũ từ Drive khi chưa có cache. Lỗi file mới/mạng/quyền giữ bản hợp
-lệ đang có trong tiến trình; sau reboot mà không đọc được Drive thì báo lỗi,
-không khẳng định còn một bản chính thức trên đĩa máy Streamlit.
+Drive là nơi lưu file gốc lâu dài. Luồng Community Drive **không dùng publish
+hoặc staging của `VersionManager`**, không cần Admin chạy `scripts/ingest_excel.py`.
+`services/drive_cache.py` ghi snapshot đã validate vào SQLite/Parquet tạm và
+chỉ đổi con trỏ cache sau khi ghi đủ dữ liệu; đây không phải kho bản công bố.
+Không ghi ngược lên Drive. Luồng local/GCS cũ vẫn độc lập; publish chính thức
+của bản GCS lưu bản gốc, Parquet, báo cáo và active pointer trong bucket bền
+vững theo [hướng dẫn GCS](DEPLOY_AND_ROLLBACK.md), không dùng `/tmp` làm kho chính thức.
+
+Sau reboot, app liệt kê Drive theo ngày giảm dần. Nếu file tồn mới nhất không
+qua validation, app kiểm tra các file tồn trước đó và hiển thị bản đầu tiên
+hợp lệ, đồng thời báo rõ file mới bị từ chối. Bản phục hồi được **validate lại**,
+không phải giả định một file đã từng được Admin công bố. Khi đã có cache hợp
+lệ trong tiến trình, lỗi nguồn mới giữ đúng bản đang xem. Xem ngày cũ tải file
+Drive tương ứng và không đổi cache hiện hành của người xem khác.
+
+Phải giữ các file lịch sử trên Drive để có thể phục hồi. Bảng tham chiếu hiện
+tại cũng phải hợp lệ: sau khi mất cache, app không thể tái tạo phân loại cũ nếu
+file tham chiếu đã bị thay bằng bản lỗi. Nếu mất quyền/mạng hoặc không tìm được
+cặp tồn + tham chiếu hợp lệ, app báo **chưa có dữ liệu hợp lệ**, vẫn có nút làm
+mới và không khẳng định còn bản cũ. Không có một kho last-good độc lập khi Drive
+không truy cập được sau reboot.
+
+Lỗi được giữ nguyên qua các lần rerun trong TTL 30 phút; không đọc lại Excel
+khi người xem đổi bộ lọc. Nút **Làm mới dữ liệu** cho phép thử lại ngay sau khi
+sửa nguồn. Log có các mốc `drive_sync_started`, `drive_inventory_listed`,
+`drive_download_*`, `excel_validation_*`, `drive_processing_*`,
+`drive_cache_activated`, `drive_sync_completed`. Lỗi validation ghi mã lỗi,
+file/sheet/ô; không ghi private key, token hoặc nội dung công thức/ô dữ liệu.
 
 ## Kiểm tra và lỗi thường gặp
 
@@ -118,6 +147,12 @@ không khẳng định còn một bản chính thức trên đĩa máy Streamlit
 - 401/403/404: kiểm tra Drive API, hai ID và chia sẻ **cả Data lẫn tham chiếu**
   cho đúng service account. Không bật public để sửa lỗi quyền.
 - File sửa giữa lúc tải hoặc checksum đổi: đợi upload hoàn tất rồi làm mới.
+- `formula_not_allowed`: mở **đúng file/sheet/ô** được báo lỗi bằng Excel, tính
+  toán và kiểm tra kết quả tại nguồn rồi copy/paste **Values** vào bản xuất mới.
+  Kiểm tra cả sheet ẩn và defined names tùy chỉnh. Giữ nguyên template/cột,
+  mã dạng Text và ngày dd/mm/yyyy; upload bản `.xlsx` hoàn chỉnh rồi bấm làm mới.
+  Chỉ đổi đuôi/tên file không loại được công thức. Ứng dụng không tự lấy giá trị
+  cache để thay thế bước xác nhận dữ liệu này.
 - Dữ liệu sai: sửa hoặc loại bản sai tại nguồn Drive theo quy trình nội bộ;
   dashboard đọc lại theo ngày/revision. Không có chức năng ghi/xóa file Drive.
 

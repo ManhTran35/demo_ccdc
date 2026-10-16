@@ -46,6 +46,10 @@ không tái sử dụng `LOCAL_DATA_DIR` hoặc kho dữ liệu thật của loc
 Filesystem của Community Cloud không phải kho dữ liệu lâu dài. Trong chế độ demo,
 dữ liệu giả được tạo lại sau reboot. Trong chế độ Drive, file gốc nằm lâu dài ở
 Drive, snapshot Parquet/SQLite là cache và được dựng lại từ nguồn khi cần.
+Luồng Drive không yêu cầu publish/ingestion CLI. Khi file mới lỗi, giữ cache hợp
+lệ nếu có; sau reboot, kiểm tra lại file tồn lịch sử trên Drive để phục hồi.
+Nếu không có cặp tồn + tham chiếu hợp lệ thì báo rõ trạng thái chưa có dữ liệu.
+Xem [chẩn đoán pipeline và quy tắc công thức](DRIVE_PIPELINE_FIX.md).
 
 Để dùng dữ liệu nội bộ thật cho 5 người, cần hoàn tất phê duyệt theo đặc tả,
 quyền xem app và kho dữ liệu bền vững riêng. IAP của Cloud Run không áp dụng cho

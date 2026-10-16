@@ -6,7 +6,10 @@ import unittest
 from zipfile import ZipFile, ZIP_DEFLATED
 
 import pandas as pd
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.formatting.rule import FormulaRule
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from core import classification_map, metrics, normalize, read_table
 from services.config import Settings
@@ -76,6 +79,43 @@ class WorkbookSecurityTests(unittest.TestCase):
             validate_workbook(output.getvalue(), "x.xlsx")
         self.assertEqual(raised.exception.code, "formula_not_allowed")
         self.assertIn("values-only", str(raised.exception))
+        self.assertEqual(raised.exception.report['filename'], 'x.xlsx')
+        self.assertEqual(raised.exception.report['sheet'], 'hidden')
+        self.assertEqual(raised.exception.report['cell'], 'A1')
+
+    def test_filter_print_metadata_and_formatting_dropdown_formulas_are_not_cell_values(self):
+        workbook = load_workbook(io.BytesIO(self.content))
+        sheet = workbook.active
+        sheet.auto_filter.ref = 'A1:K4'
+        sheet.print_area = 'A1:K4'
+        sheet.print_title_rows = '1:1'
+        sheet.conditional_formatting.add('A2:K4', FormulaRule(formula=['A2="example"']))
+        validation = DataValidation(type='list', formula1='"A,B"'); validation.add('A2:A4')
+        sheet.add_data_validation(validation)
+        output = io.BytesIO(); workbook.save(output); workbook.close()
+        validate_workbook(output.getvalue(), 'metadata.xlsx')
+        self.assertEqual(len(transform_inventory(output.getvalue(), {}, date(2026,10,15)).dataframe), 3)
+
+    def test_arbitrary_or_dynamic_builtin_defined_names_remain_rejected(self):
+        for name, expression in [('custom', 'Sheet!$A$1'), ('_xlnm._FilterDatabase', 'OFFSET(Sheet!$A$1,0,0)'),
+                                  ('_xlnm.Print_Area', "'[other.xlsx]Sheet'!$A$1")]:
+            workbook = load_workbook(io.BytesIO(self.content))
+            workbook.defined_names.add(DefinedName(name, attr_text=expression))
+            output = io.BytesIO(); workbook.save(output); workbook.close()
+            with self.subTest(name=name), self.assertRaises(ValidationError) as caught:
+                validate_workbook(output.getvalue(), 'names.xlsx')
+            self.assertEqual(caught.exception.report['defined_name'], name)
+            self.assertNotIn(expression, str(caught.exception))
+
+    def test_cached_formula_result_never_reaches_table_parser(self):
+        content = rewrite_zip(self.content, {'xl/worksheets/sheet1.xml': lambda b: b.replace(
+            b'<c r="B2" t="inlineStr"><is><t>0007</t></is></c>', b'<c r="B2"><f>1+1</f><v>999</v></c>')})
+        from unittest.mock import patch
+        with patch('core.read_table', side_effect=AssertionError('cached value reached Pandas')) as parser:
+            with self.assertRaises(ValidationError) as caught:
+                transform_inventory(content, {}, date(2026,10,15), filename='cached.xlsx')
+        parser.assert_not_called()
+        self.assertEqual(caught.exception.report['cell'], 'B2')
 
     def test_macro_external_link_dde_rejected(self):
         for name, content in [("xl/vbaProject.bin", b"macro"),

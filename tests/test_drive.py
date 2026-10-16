@@ -2,10 +2,12 @@
 from dataclasses import replace
 from datetime import date
 import hashlib
+import io
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from concurrent.futures import ThreadPoolExecutor
+from openpyxl import load_workbook
 
 from services.config import Settings
 from services.demo import synthetic_files
@@ -81,15 +83,15 @@ class DriveRepositoryTests(unittest.TestCase):
         active = self.repo.get_active_version()
         with patch('services.drive.transform_inventory', side_effect=AssertionError('Repeated parse')):
             self.repo.synchronize(force=True)
-        self.assertEqual(self.client.downloads, [FILE_A, REFERENCE_ID])
+        self.assertEqual(self.client.downloads, [REFERENCE_ID, FILE_A])
         self.assertEqual(self.repo.get_active_version(), active)
 
     def test_five_concurrent_refreshes_share_one_validated_snapshot(self):
         with ThreadPoolExecutor(max_workers=5) as pool:
             futures=[pool.submit(self.repo.synchronize) for _ in range(5)]
             for future in futures:future.result(timeout=30)
-        self.assertEqual(self.client.downloads,[FILE_A,REFERENCE_ID])
-        self.assertEqual(len([v for v in self.repo.list_versions() if v['published']]),1)
+        self.assertEqual(self.client.downloads,[REFERENCE_ID,FILE_A])
+        self.assertEqual(len([v for v in self.repo.list_versions() if v['current']]),1)
         self.assertEqual(len(self.repo.read_active_dataset(date(2026,10,15))),30)
 
     def test_new_snapshot_replaces_rows_instead_of_adding_them(self):
@@ -142,14 +144,18 @@ class DriveRepositoryTests(unittest.TestCase):
 
     def test_first_sync_failure_is_explicit_not_synthetic_fallback(self):
         self.client.error = DriveError('Không có quyền đọc Drive.')
-        with self.assertRaises(DriveError): self.repo.synchronize()
+        self.repo.synchronize()
+        self.assertIn('quyền đọc Drive', self.repo.last_error)
+        self.repo.synchronize()  # A throttled repeat must retain the same error.
+        self.assertIn('quyền đọc Drive', self.repo.last_error)
         self.assertIsNone(self.repo.get_active_version())
         self.repo.seed_synthetic_demo()
         self.assertIsNone(self.repo.get_active_version())
 
     def test_revision_changed_during_download_does_not_publish(self):
         self.client.change_during_download = True
-        with self.assertRaisesRegex(DriveError, 'đang được cập nhật'): self.repo.synchronize()
+        self.repo.synchronize()
+        self.assertIn('đang được cập nhật', self.repo.last_error)
         self.assertIsNone(self.repo.get_active_version())
 
     def test_reference_revision_change_reprocesses_pair(self):
@@ -167,6 +173,86 @@ class DriveRepositoryTests(unittest.TestCase):
         self.client.error=None
         self.repo.synchronize(force=True)
         self.assertFalse(self.repo.last_error)
+
+    def test_cold_start_recovers_previous_valid_drive_file_without_ingestion(self):
+        self.add_file(content=b'not an xlsx')
+        self.repo.synchronize()
+        self.assertEqual(self.repo.get_active_version()['data_date'], '2026-10-13')
+        self.assertIn('Ton_CCDC_14102026.xlsx', self.repo.last_error)
+        self.assertEqual(len(self.repo.read_active_dataset(date(2026,10,15))), 30)
+        with tempfile.TemporaryDirectory() as directory:
+            restarted = DriveRepository(replace(self.settings, local_data_dir=directory), DriveConfig(), self.client)
+            self.assertIsNone(restarted.get_active_version())
+            restarted.synchronize()
+            self.assertEqual(restarted.get_active_version()['data_date'], '2026-10-13')
+            self.assertTrue(restarted.last_error)
+
+    def test_no_valid_file_keeps_empty_state_and_does_not_repeat_excel_validation(self):
+        self.client.contents[FILE_A] = b'invalid xlsx'
+        self.repo.synchronize()
+        self.assertIsNone(self.repo.get_active_version())
+        self.assertIn('Ton_CCDC_13102026.xlsx', self.repo.last_error)
+        with patch('services.drive.transform_inventory', side_effect=AssertionError('reparsed within TTL')):
+            self.repo.synchronize()
+        self.assertIsNone(self.repo.get_active_version())
+        self.assertEqual(len(self.repo.last_failures), 1)
+        self.client.contents[FILE_A] = synthetic_files(8)[0]
+        self.repo.synchronize(force=True)
+        self.assertFalse(self.repo.last_error)
+        self.assertEqual(len(self.repo.read_active_dataset(date(2026,10,15))), 8)
+
+    def test_reference_cell_formula_reports_actual_file_sheet_cell_and_stops_recovery(self):
+        workbook = load_workbook(io.BytesIO(self.client.contents[REFERENCE_ID]))
+        workbook.active['B2'] = '=1+1'
+        output = io.BytesIO(); workbook.save(output); workbook.close()
+        self.client.contents[REFERENCE_ID] = output.getvalue()
+        self.add_file()
+        self.repo.synchronize()
+        self.assertIsNone(self.repo.get_active_version())
+        self.assertIn('Phan_loai_VTTB.xlsx', self.repo.last_error)
+        self.assertIn('B2', self.repo.last_error)
+        self.assertEqual(self.repo.last_failures[0]['source_role'], 'reference')
+        self.assertEqual(self.client.downloads, [REFERENCE_ID])
+
+    def test_cold_fallback_does_not_skip_connection_errors(self):
+        self.add_file()
+        with patch.object(self.client, 'download', side_effect=DriveError('Mất kết nối.')):
+            self.repo.synchronize()
+        self.assertIsNone(self.repo.get_active_version())
+        self.assertIn('Mất kết nối', self.repo.last_error)
+
+    def test_pipeline_logs_stages_without_cell_content_or_credentials(self):
+        with self.assertLogs('services', level='INFO') as captured:
+            self.repo.synchronize()
+        output = '\n'.join(captured.output)
+        for stage in ['drive_sync_started', 'drive_inventory_listed', 'drive_download_completed',
+                      'excel_validation_succeeded', 'drive_processing_completed', 'drive_cache_activated', 'drive_sync_completed']:
+            self.assertIn(stage, output)
+        self.assertNotIn('private_key', output)
+
+    def test_drive_path_never_uses_legacy_publish_or_staging(self):
+        with patch('services.versions.VersionManager.commit', side_effect=AssertionError('legacy publish called')), \
+                patch('services.versions.VersionManager.stage_upload', side_effect=AssertionError('legacy staging called')):
+            self.repo.synchronize()
+        self.assertIsNotNone(self.repo.get_active_version())
+        keys = self.repo.manager.storage.list('')
+        self.assertTrue(all(key.startswith('drive-cache/') for key in keys))
+        self.assertNotIn('metadata/active.json', keys)
+
+    def test_partial_materialization_failure_keeps_exact_previous_snapshot(self):
+        self.repo.synchronize()
+        active = self.repo.get_active_version()
+        self.add_file()
+        put = self.repo.manager.storage.put
+        def fail_dataset(key, *args, **kwargs):
+            if key.endswith('/dataset.parquet'):
+                raise OSError('disk unavailable')
+            return put(key, *args, **kwargs)
+        with patch.object(self.repo.manager.storage, 'put', side_effect=fail_dataset):
+            self.repo.synchronize(force=True)
+        self.assertEqual(self.repo.get_active_version(), active)
+        self.assertEqual(len(self.repo.read_active_dataset(date(2026,10,15))), 30)
+        self.assertTrue(self.repo.last_error)
 
 
 class DriveNameTests(unittest.TestCase):

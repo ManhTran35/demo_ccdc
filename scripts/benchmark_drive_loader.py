@@ -69,7 +69,7 @@ def profile(rows):
         settings=replace(Settings(),app_env='community-drive',local_data_dir=Path(directory))
         with patch('services.drive_loader.DriveClient.from_service_account',return_value=api):
             repo=create_drive_repository(settings,config)
-        run('cold_download_validation_pandas_parquet_publish',repo.synchronize)
+        run('cold_download_validation_pandas_parquet_cache',repo.synchronize)
         assert not repo.last_error,repo.last_error
         frame=run('read_pandas_dataset',lambda:repo.read_active_dataset(vn_today()))
         assert len(frame)==rows

@@ -1,5 +1,8 @@
 # Dashboard tồn CCDC — Streamlit Community Cloud & Local
 
+Pipeline Drive tự validate/nạp file và phục hồi từ lịch sử trên Drive sau reboot,
+không yêu cầu ingestion/publish thủ công. Xem [chẩn đoán và kiểm thử bản sửa](docs/DRIVE_PIPELINE_FIX.md).
+
 Host đích là **Streamlit Community Cloud**. Entry point online `streamlit_app.py` dùng giao diện đỏ–trắng theo Viettel Post, cùng KPI và bộ lọc trong `app.py`. Hỗ trợ **Google Drive**: thư mục `Data`, file `Ton_CCDC_ddmmyyyy.xlsx`, chọn bản chụp theo ngày trong tên và dùng file tham chiếu đã cung cấp. Xem [thiết lập Google Drive](docs/GOOGLE_DRIVE.md) và [triển khai Streamlit](docs/STREAMLIT_DEPLOY.md).
 
 Ngày nguồn được đọc **dd/mm/yyyy**, không đoán mm/dd/yyyy; ô chọn ngày, bảng và file xuất dùng dd/mm/yyyy. Ngày lưu nội bộ dùng ISO. `services/drive_loader.py` tự đọc **`st.secrets["drive"]`** gồm `folder_id` và `service_account_json`, cache 30 phút và hỗ trợ làm mới ngay. Nếu chưa có cấu hình Drive, app chạy demo có nhãn; khi Drive thiếu quyền/file hợp lệ, app báo lỗi, không dùng dữ liệu giả thay thế. Tên file, ngày dữ liệu, thời gian sửa nguồn và đồng bộ hiển thị ở sidebar.

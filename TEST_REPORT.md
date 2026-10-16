@@ -1,5 +1,9 @@
 # Báo cáo kiểm thử
 
+Sửa pipeline Drive, validation công thức, trạng thái lỗi/rỗng và phục hồi sau
+reboot: **208 tests trên Python 3.12/3.14**, Chromium và benchmark 100.000 dòng:
+[báo cáo hiện tại](docs/DRIVE_PIPELINE_FIX.md).
+
 Loader Drive với Secrets `[drive]`, TTL 30 phút và kiểm thử 100.000 dòng:
 [báo cáo mới nhất](docs/DRIVE_LOADER_REVIEW.md).
 

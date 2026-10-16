@@ -62,9 +62,12 @@ def refresh_state(rendered_day, rendered_version, rendered_generation, _store):
     try:
         if _store.settings.drive_mode:
             _store.synchronize()
-            if _store.last_error:
-                st.warning("Đang giữ bản dữ liệu hợp lệ gần nhất. " + _store.last_error)
         active = _store.get_active_version()
+        if _store.settings.drive_mode and _store.last_error:
+            if active:
+                st.warning("Đang hiển thị bản dữ liệu đã xác minh gần nhất. Nguồn mới chưa được chấp nhận.\n\n" + _store.last_error)
+            else:
+                st.error("Chưa có bản dữ liệu hợp lệ để hiển thị.\n\n" + _store.last_error)
     except Exception as exc:
         logger.error("dashboard_refresh_failed error_type=%s", type(exc).__name__)
         return st.rerun(scope="app")
@@ -212,6 +215,8 @@ def administration(store, role, today):
 
 def main():
     settings = Settings.from_env()
+    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("services").setLevel(settings.log_level)
     with st.sidebar:
         render_brand()
     identity = verify_iap_identity(st.context.headers, settings) if settings.cloud_mode else None
@@ -241,7 +246,10 @@ def main():
         administration(store, role, today)
         return
     if not active:
-        st.warning("Chưa có phiên đã công bố. Admin cần validate và publish bằng script ingestion.")
+        if settings.drive_mode:
+            st.info("Nguồn Google Drive. Sửa file được báo lỗi rồi bấm Làm mới dữ liệu. Ứng dụng tự kiểm tra và nạp file hợp lệ; không cần chạy script ingestion.")
+        else:
+            st.warning("Chưa có phiên đã công bố. Admin cần validate và publish bằng script ingestion.")
         return
     observed = (active["active_version"], active["_generation"])
     if st.session_state.get("observed_pointer") != observed:
@@ -254,10 +262,16 @@ def main():
         # Clearing only session_state leaves the old date visible in Chrome.
         cutoff_key = f"as_of_{active['active_version']}_{active['_generation']}"
         cutoff = st.date_input("Ngày chốt dữ liệu", value=date.fromisoformat(active["data_date"]), key=cutoff_key, format="DD/MM/YYYY")
-    version = store.select_version(cutoff.isoformat(), active)
+    try:
+        version = store.select_version(cutoff.isoformat(), active)
+    except (DriveError, ValidationError) as exc:
+        if not settings.drive_mode:
+            raise
+        st.error("Không đọc được bản chụp tại ngày đã chọn. " + str(exc))
+        return
     if not version:
         st.title(page)
-        st.info("Chưa có phiên công bố tính đến ngày đã chọn. Không lấy dữ liệu ở thời điểm tương lai.")
+        st.info("Chưa có bản chụp Drive tính đến ngày đã chọn. Không lấy dữ liệu ở thời điểm tương lai." if settings.drive_mode else "Chưa có phiên công bố tính đến ngày đã chọn. Không lấy dữ liệu ở thời điểm tương lai.")
         return
     df, report, mapping = load_version(version["id"], today.isoformat(), storage_namespace(store), store)
     if settings.drive_mode:

@@ -1,5 +1,9 @@
 # Rà soát và tích hợp Google Drive cá nhân
 
+Báo cáo này ghi phiên bản `90f9841`. Bản sửa tiếp theo tách cache Drive khỏi
+publish cũ, phân biệt công thức ô/metadata và sửa trạng thái lỗi/rỗng; xem
+[báo cáo pipeline mới nhất](DRIVE_PIPELINE_FIX.md).
+
 ## Luồng giữ nguyên
 
 | Thành phần | Vai trò và kết luận |
