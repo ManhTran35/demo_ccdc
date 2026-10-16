@@ -1,0 +1,13 @@
+# Deliberately independent of .gitignore: tracked legacy files are also excluded.
+**
+!.gcloudignore
+!.dockerignore
+!Dockerfile
+!requirements-lock.txt
+!app.py
+!core.py
+!ui_labels.py
+!services/
+!services/*.py
+services/__pycache__/
+services/*.pyc

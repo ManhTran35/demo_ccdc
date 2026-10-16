@@ -1,15 +1,17 @@
-# Dashboard theo dõi tồn CCDC · Demo local
+# Dashboard tồn CCDC — Streamlit Community Cloud & Local
 
-Có hai cách sử dụng:
+Pipeline Drive tự validate/nạp file và phục hồi từ lịch sử trên Drive sau reboot,
+không yêu cầu ingestion/publish thủ công. Xem [chẩn đoán và kiểm thử bản sửa](docs/DRIVE_PIPELINE_FIX.md).
 
-1. **HTML độc lập**: tải [dashboard_ccdc.html](downloads/dashboard_ccdc.html), mở trực tiếp bằng Chrome/Edge/Firefox bản mới. Không cần Python, không cần Internet. File đã nhúng đầy đủ 91.955 dòng, bảng phân loại và nguyên file Excel mẫu; dung lượng khoảng 15 MB.
-2. **Streamlit**: tải [mã nguồn ZIP](downloads/ma_nguon_ccdc.zip), giải nén rồi chạy theo hướng dẫn dưới đây, hoặc clone repository này. Dữ liệu/lịch sử lưu trên ổ đĩa; phù hợp để chỉnh sửa và phát triển tiếp.
+Host đích là **Streamlit Community Cloud**. Entry point online `streamlit_app.py` dùng giao diện đỏ–trắng theo Viettel Post, cùng KPI và bộ lọc trong `app.py`. Hỗ trợ **Google Drive**: thư mục `Data`, file `Ton_CCDC_ddmmyyyy.xlsx`, chọn bản chụp theo ngày trong tên và dùng file tham chiếu đã cung cấp. Xem [thiết lập Google Drive](docs/GOOGLE_DRIVE.md) và [triển khai Streamlit](docs/STREAMLIT_DEPLOY.md).
 
-Không triển khai Cloud Run, không kết nối dịch vụ cloud. Hai bản dùng cùng dữ liệu mẫu và quy tắc nghiệp vụ, **không đồng bộ lịch sử** với nhau. Các file nguồn ứng dụng được nêu trong yêu cầu chưa tồn tại trong checkout ban đầu, nên demo này được tạo mới sau khi kiểm tra hai file Excel.
+Ngày nguồn được đọc **dd/mm/yyyy**, không đoán mm/dd/yyyy; ô chọn ngày, bảng và file xuất dùng dd/mm/yyyy. Ngày lưu nội bộ dùng ISO. `services/drive_loader.py` tự đọc **`st.secrets["drive"]`** gồm `folder_id` và `service_account_json`, cache 30 phút và hỗ trợ làm mới ngay. Nếu chưa có cấu hình Drive, app chạy demo có nhãn; khi Drive thiếu quyền/file hợp lệ, app báo lỗi, không dùng dữ liệu giả thay thế. Tên file, ngày dữ liệu, thời gian sửa nguồn và đồng bộ hiển thị ở sidebar.
 
-## Chạy Streamlit trên Windows
+Mã GCS, snapshot Parquet và IAP từ phương án Cloud Run vẫn được giữ, nhưng không phải điều kiện để triển khai demo lên Streamlit Community Cloud. **Chưa có URL ứng dụng Streamlit được xác minh đang chạy.**
 
-Cài **Python 3.12** (có thể dùng Python 3.13 nếu thư viện có wheel phù hợp). Mở Terminal/CMD tại thư mục `demo_ccdc` sau khi giải nén:
+## Quick start local — Windows
+
+Cài Python **3.12**, mở CMD/Terminal tại thư mục repository:
 
 ```bat
 py -3.12 -m venv .venv
@@ -17,9 +19,9 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe -m streamlit run app.py --browser.gatherUsageStats false
 ```
 
-Không cần kích hoạt virtualenv. Streamlit sẽ in địa chỉ local và mở trình duyệt trên máy của bạn. Dừng bằng `Ctrl+C`. Lần mở đầu cần khoảng 20–35 giây để đọc Excel và tạo phiên mẫu; lần sau dùng bản chụp đã lưu.
+Không cần activate virtualenv. Lần đầu tự tạo **1.000 dòng dữ liệu giả** tại `data/runtime-v2`, không sử dụng Excel thật. Dừng bằng Ctrl+C. Vai trò ở local chỉ là mô phỏng, không phải đăng nhập. Có thể đổi vị trí lưu bằng biến `LOCAL_DATA_DIR`; không xóa thư mục này khi cập nhật code.
 
-Trên macOS/Linux:
+Linux/macOS:
 
 ```sh
 python3.12 -m venv .venv
@@ -27,80 +29,92 @@ python3.12 -m venv .venv
 .venv/bin/python -m streamlit run app.py --browser.gatherUsageStats false
 ```
 
-Thư viện chính: Streamlit 1.50.0, pandas 2.3.3, openpyxl 3.1.5, XlsxWriter 3.2.9. `requirements-lock.txt` khóa toàn bộ dependency đã cài kiểm thử; `requirements.txt` liệt kê bốn thư viện chính. HTML dùng SheetJS CE 0.18.5 được nhúng sẵn; license nằm ở `assets/XLSX-LICENSE.txt`, không cần npm khi sử dụng.
+Ứng dụng không tự load `.env`; `.env.example` là mẫu biến, không chứa credential. Export biến qua shell hoặc cấu hình Cloud Run. Không copy file service-account JSON vào repository.
 
-## Dữ liệu mẫu và quy tắc
+## Deploy online
 
-- `data/samples/ccdc.xlsx`: nguyên file `file ccdc.xlsx`, sheet `Sheet1`, 91.955 bản ghi và 20 cột.
-- `data/samples/classification.xlsx`: nguyên file `Phan_loai_VTTB.xlsx`, sheet `Chi_tiet`, tiêu đề tại dòng 6, 4.453 dòng tham chiếu.
-- Ngày chốt mẫu **13/10/2026**, đã được người dùng xác nhận. Phiên mẫu được tạo sẵn để xem dashboard; các file nhập tiếp theo cần xem trước rồi duyệt.
-- `Chi nhánh` dùng `Chi nhánh mới`; dùng cột `Chi nhánh` nếu file mới có tên chuẩn này. Không tự lấy `Chi nhánh cũ` thay cho hiện trạng mới.
-- Hai cột `Đơn vị quản lý` được giữ riêng. Bộ lọc dùng cột thứ hai (`Đơn vị quản lý [2]`), lấy cột thứ nhất nếu ô thứ hai trống. Trong file mẫu hai cột giống nhau ở mọi dòng.
-- Các cột gốc có tiền tố `Gốc · ` trong bảng chi tiết; cột không tên giữ thành `Gốc · Cột 11 (không tên)`. Không loại bỏ cột hoặc dòng nghi trùng. Số dòng Excel gốc được giữ để đối chiếu.
-- Ghép tên chính xác sau chuẩn hóa khoảng trắng và chữ hoa/thường. Tham chiếu trùng cùng loại được gom về một ánh xạ; tham chiếu có loại/nhóm xung đột được gán `Chưa phân loại`, đánh dấu cần rà soát. Không nhân bản dòng nguồn. Tên gần giống chỉ là gợi ý.
-- Tuổi sử dụng tính theo **ngày hiện tại tại Asia/Ho_Chi_Minh**. Tháng tròn = chênh lệch tháng, trừ 1 nếu chưa tới ngày kỷ niệm trong tháng. Ngày thiếu, lỗi hoặc tương lai có tuổi `Chưa xác định`. Nhóm tuổi: dưới 12; 12–35; 36–59; 60–71; 72–95; từ 96 tháng. Cache Streamlit chứa ngày hiện tại; fragment kiểm tra ngày mới mỗi 30 giây và chạy lại dashboard khi qua ngày. HTML cũng kiểm tra mỗi 30 giây và khi quay lại tab, không cần tải lại Excel.
-- Ngày nguồn hỗ trợ `dd/mm/yyyy`, `dd-mm-yyyy`, ISO `yyyy-mm-dd`, ô ngày Excel và serial ngày Excel. Số lượng phải là số hữu hạn không âm (số thập phân dùng dấu chấm); ô trống/không phải số/âm chặn công bố.
+Chọn repository `ManhTran35/demo_ccdc`, nhánh `deploy/streamlit-community`, main file `streamlit_app.py`, Python **3.12** tại [Streamlit Community Cloud](https://share.streamlit.io/deploy?repository=ManhTran35%2Fdemo_ccdc&branch=deploy%2Fstreamlit-community&mainModule=streamlit_app.py). Không cần secrets cho demo dữ liệu giả. Để đọc Drive thật, cấu hình [mẫu Secrets](.streamlit/secrets.example.toml), chia sẻ cả thư mục Data và tham chiếu cho service account quyền Viewer theo [hướng dẫn](docs/GOOGLE_DRIVE.md). Chi tiết và giới hạn lưu trữ: [docs/STREAMLIT_DEPLOY.md](docs/STREAMLIT_DEPLOY.md).
 
-## Bộ lọc và chỉ tiêu
+### Phương án Cloud Run trước đây (tùy chọn, không dùng cho Community Cloud)
 
-Chi nhánh, đơn vị quản lý phụ thuộc chi nhánh, loại (có `Chưa phân loại`), tình trạng, ngày chốt. Không chọn giá trị = tất cả. Tìm kiếm mã/tên/serial/đơn vị và chỉ báo chất lượng cũng là bộ lọc dùng chung; mọi KPI, bảng, biểu đồ và file xuất sử dụng đúng tập dữ liệu đó.
+1. Đọc [audit source](docs/ARCHITECTURE_CURRENT.md); framework thật là Streamlit, không có build Node bắt buộc.
+2. Owner hoàn tất [Project/Billing/bucket/IAM/IAP](docs/CLOUD_SETUP.md), repo private và phê duyệt. Không tự tạo tài nguyên hoặc upload dữ liệu thật khi thiếu phê duyệt.
+3. Test local/container bằng dữ liệu giả, review và commit source. Theo [deploy và rollback](docs/DEPLOY_AND_ROLLBACK.md), chạy `scripts/deploy.sh` (PowerShell wrapper: `scripts/deploy.ps1`). Script build từ source allowlist của commit sạch, deploy đúng image digest, IAP bật ngay và không public.
+4. Nghiệm thu staging qua IAP với 5 tài khoản, user bị từ chối, WebSocket/static assets, RAM/cold-start và publish/rollback trước production.
 
-Chọn ngày chốt lấy bản công bố có ngày chốt gần nhất **không vượt ngày chọn**; nếu cùng ngày chốt, lấy lần công bố mới nhất. Trước ngày chốt đầu tiên sẽ báo chưa có dữ liệu, không dùng phiên tương lai. Mặc định mở phiên được công bố mới nhất. Khôi phục tạo lần công bố mới của bản chụp cũ, giữ ngày chốt và không xóa lịch sử; bộ lọc mặc định chuyển về ngày chốt của bản được khôi phục.
+V1-A **web online chỉ đọc**: lọc, xem và export. Ingestion do Admin chạy CLI với ADC được Google xác minh email, có `ADMIN_EMAILS` và IAM riêng. Runtime account chỉ có quyền đọc bucket. Trang upload/role picker local không xuất hiện trong GCS mode; V1-B web-admin chưa triển khai.
 
-KPI:
+Mặc định đề xuất Bangkok `asia-southeast3`, 1 vCPU/2 GiB, min 0/max 1, concurrency20, timeout1800s, request-based. Phải xác minh dịch vụ/region và tải thực tế; không cam kết phí cố định hay coi max1 là khóa publish. Bảng giá/budget và vận hành nằm trong tài liệu.
 
-- **Số mã CCDC đang sử dụng**: `Mã VTTB` duy nhất, không rỗng, trên dòng `Đang sử dụng`.
-- **Số mã vật tư chưa có ngày đưa vào sử dụng**: mã duy nhất thuộc `Vật tư` với ô ngày nguồn để trống. Không coi ngày lỗi/tương lai là thiếu ngày, không kết luận vật tư chưa sử dụng.
-- **Tỷ lệ bản ghi thiết bị hỏng**: số bản ghi `Thiết bị` có `Tình trạng = Hỏng` / toàn bộ bản ghi `Thiết bị` sau lọc. Mẫu số bằng 0 hiển thị `—`. Không cộng Số lượng/ĐVT; tooltip ghi tử số, mẫu số và đơn vị.
+## Cập nhật dữ liệu — preview rồi xác nhận
 
-Bảng chi nhánh/tình trạng đếm mã duy nhất **trong từng nhóm**. Một mã có thể xuất hiện ở nhiều nhóm, không ép tổng nhóm bằng mã duy nhất toàn bộ. Biểu đồ tuổi đếm **bản ghi** `Đang sử dụng` có ngày hợp lệ, ghi số bị loại vì ngày chưa xác định.
+Đọc [runbook](docs/OPERATIONS_RUNBOOK.md) để thiết lập ADC/GCS thật. Sau đây là ví dụ **local, dữ liệu giả**:
 
-Chi tiết phân trang 50/100/200/500 dòng, chọn thêm các cột gốc. CSV/Excel xuất **toàn bộ** bản ghi sau lọc, không chỉ trang hiện tại, có cột ngày chốt và ngày tính tuổi. Mã/serial giữ chuỗi trong Excel. CSV không có kiểu cột: khi Excel nhập CSV hãy chọn Text cho mã/serial để Excel không tự đổi `0007` thành `7`.
+```sh
+python scripts/generate_demo_data.py --rows 100000 --output data/generated
+python scripts/ingest_excel.py preview --file data/generated/inventory_demo.xlsx \
+  --classification data/generated/classification_demo.xlsx --data-date 2026-10-15
+# Đọc KPI/delta/warnings và đối chiếu file, ngày chốt, version, generation.
+python scripts/ingest_excel.py publish --version VERSION_ID --confirm CONFIRMATION_TOKEN --expected-generation GENERATION
+python scripts/ingest_excel.py list
+python scripts/ingest_excel.py rollback --version KNOWN_GOOD_VERSION
+# Chỉ sau khi xem đúng preview rollback:
+python scripts/ingest_excel.py rollback --version KNOWN_GOOD_VERSION --confirm TOKEN --expected-generation GENERATION
+```
 
-## Nhập, duyệt và phân loại
+`VERSION_ID`, token và generation là giá trị lấy từ preview, không chạy nguyên placeholder. Preview không tự publish. Token gắn với đúng snapshot, checksum manifest và generation hiện hành; dữ liệu đổi giữa hai thao tác sẽ báo conflict, không cưỡng bức ghi đè.
 
-1. Vào Quản trị, chọn vai trò `Người nhập` hoặc `Người duyệt` (mô phỏng).
-2. Chọn ngày chốt và file `.xlsx` theo mẫu, tối đa 25 MB. HTML hỗ trợ tối đa 250.000 dòng và 200 cột mỗi sheet.
-3. Bấm kiểm tra/xem trước: lưu nguyên file gốc, kiểm tra cấu trúc, số lượng, ngày, mã, serial và phân loại. Số lượng lỗi/cột thiếu chặn công bố. Các cảnh báo ngày/phân loại/serial không tự xóa bản ghi.
-4. Chỉ vai trò `Người duyệt` mới có thể công bố. File lỗi và bản xem trước không thay đổi phiên hiện hành.
-5. Lịch sử có xem lại, tải nguyên file gốc và khôi phục. Mỗi phiên là bản chụp **toàn bộ**, không cộng với file các kỳ trước.
-6. Quản lý phân loại bằng nhập bảng Excel có các cột `Tên VTTB gốc`, `Loại VTTB`, `Nhóm lớn`, `Trạng thái rà soát`; `Ghi chú phân loại` tùy chọn. Xem trước rồi người duyệt lưu cho lần nhập tiếp theo. Phiên đã công bố giữ nguyên phân loại; muốn áp dụng lại thì nhập và duyệt file hiện trạng mới.
+Mỗi file là bản chụp toàn bộ, không cộng chồng. `.xlsx` được kiểm tra ZIP/XML/dung lượng/schema/kiểu/số lượng/ngày trước khi chuẩn hóa. File có công thức, macro, external link, DDE hoặc nội dung nhúng bị chặn; xuất bản values-only để ingest, bản gốc vẫn giữ trong staging. File lỗi không đổi active. Ngưỡng warning tùy chỉnh qua `VALIDATION_WARNING_LIMITS`, không tự deduplicate/sửa giá trị. Chi tiết schema/đơn vị nằm trong audit và runbook.
 
-**Vai trò chỉ mô phỏng, không phải xác thực hay phân quyền bảo mật.** Không có tài khoản, mật khẩu hoặc dịch vụ người dùng. Lịch sử Streamlit là SQLite + snapshot gzip tại `data/runtime`, nguyên file gốc tại `data/runtime/originals`; sao lưu cả thư mục khi cần. File lỗi được giữ nguyên ở thư mục originals ngay cả khi không tạo được phiên.
+Raw inventory + classification gốc, Parquet, mapping, validation/metrics/manifest là snapshot bất biến. `metadata/active.json` được CAS **sau cùng**, sau readback/checksum/schema; generation chống publish đồng thời. Audit event chain giữ publication/rollback kể cả tiến trình dừng sau CAS. Dữ liệu từ ngày chốt trước vẫn truy vết được; code rollback và data rollback độc lập.
 
-HTML lưu lịch sử, bảng phân loại thay thế và nguyên file nhập trong IndexedDB của trình duyệt. Dữ liệu mẫu nằm trong HTML, có thể xem lại kể cả khi không cho lưu trữ; nếu IndexedDB bị chặn, nhập/lưu phiên sẽ báo lỗi. Đổi trình duyệt, di chuyển HTML hoặc xóa dữ liệu trình duyệt có thể mất lịch sử. Trong Lịch sử có xuất/nhập file sao lưu `.json.gz`, gồm các bản chụp, phân loại và nguyên file gốc. Chưa có cơ chế nhiều người duyệt, đồng bộ hoặc khóa giao dịch nhiều người dùng.
+Dashboard mặc định đọc đúng active pointer (kể cả sau rollback). Chọn ngày trước active cho xem bản công bố gần nhất không vượt ngày chọn; ngày từ active trở đi vẫn dùng bản chính thức hiện hành. Xem lại các version khác trong lịch sử local/CLI. Cache gắn với namespace + version + ngày hiện tại; fragment kiểm tra active/generation và ngày mới mỗi30s. Đọc dashboard dùng Parquet, không parse Excel hoặc ghép phân loại lại mỗi lượt xem.
 
-## Chỉnh sửa mã nguồn
+## KPI và dữ liệu không đổi định nghĩa
+
+- `Số mã CCDC đang sử dụng`: Mã VTTB duy nhất không rỗng trên bản ghi Đang sử dụng.
+- `Số mã vật tư chưa có ngày đưa vào sử dụng`: mã duy nhất thuộc Vật tư với ô ngày nguồn trống; không kết luận tất cả chưa sử dụng.
+- `Tỷ lệ bản ghi thiết bị hỏng`: bản ghi Thiết bị/Hỏng chia cho toàn bộ bản ghi Thiết bị sau lọc; không cộng Số lượng khác ĐVT. Mẫu số0 hiển thị `—`.
+- Chi nhánh ưu tiên `Chi nhánh mới`; đơn vị ưu tiên cột Đơn vị quản lý thứ2. Giữ cả cột gốc với tiền tố `Gốc · ` và số dòng Excel. Ghép tên chỉ đúng sau case/whitespace, xung đột cần rà soát, không nhân dòng.
+- Tuổi là **tháng tròn tới hôm nay Asia/Ho_Chi_Minh**, độc lập ngày chốt. Ngày thiếu/lỗi/tương lai có tuổi Chưa xác định; cập nhật theo ngày mới không tải lại Excel.
+- Bộ lọc chi nhánh, đơn vị phụ thuộc, loại (có Chưa phân loại), tình trạng, ngày chốt, tìm kiếm và chỉ báo chất lượng dùng chung cho KPI/bảng/biểu đồ/export. Đếm mã duy nhất trong từng nhóm có thể trùng giữa nhóm.
+- Chi tiết phân trang 50/100/200/500 dòng, chọn thêm cột; CSV/Excel xuất toàn bộ kết quả sau lọc và có hai ngày. Mã/serial giữ chuỗi trong Excel; nhập CSV vào Excel cần chọn kiểu Text cho mã để không mất số0 đầu.
+
+Đổi nhãn/card tại `ui_labels.py`; đổi giao diện tại `app.py`. Công thức ở `core.py` dùng chung local/cloud. Không đổi công thức chỉ để sửa tiêu đề.
+
+## Cấu trúc chính
 
 ```text
-app.py                         Giao diện Streamlit
-core.py                        Chuẩn hóa, tuổi, phân loại, KPI, lọc, xuất, phiên
-assets/dashboard.template.html Cấu trúc HTML
-assets/dashboard.css           Giao diện HTML
-assets/dashboard.js            Nghiệp vụ và tương tác HTML offline
-assets/xlsx.full.min.js         SheetJS CE, nhúng trong HTML
-scripts/build_html.py          Tạo lại một file HTML độc lập
-scripts/prepare.py             Tạo dữ liệu mẫu trên ổ đĩa và kiểm tra
-tests/test_core.py             Kiểm thử lõi Python
-tests/browser.cjs              Kiểm thử trình duyệt và xuất/nhập Excel
-data/samples/                  Hai file Excel gốc
+app.py / ui_labels.py          Giao diện Streamlit và nhãn
+core.py                        KPI, bộ lọc, tháng tròn, chuẩn hóa và export
+services/config.py             Cấu hình local/staging/production fail closed
+services/auth.py               IAP JWT + Admin ADC identity
+services/storage.py            Local SQLite object adapter / GCS ADC
+services/versions.py            Immutable snapshots, checksum, CAS và rollback
+services/repository.py         Đọc Parquet, chọn active/history, cập nhật tuổi
+services/validation.py          XLSX package/schema safety
+services/transform.py           Chuẩn hóa một lần, Parquet, preview/delta
+services/demo.py               Generator dữ liệu giả
+scripts/ingest_excel.py         Ingestion V1-A, list, publish, rollback
+scripts/deploy.sh / deploy.ps1  Deploy source commit → digest → private IAP
+scripts/benchmark_ingestion.py  Benchmark 100k giả
+assets/                        Demo HTML offline riêng, không nằm trong image
+Dockerfile / .dockerignore     Streamlit non-root đúng PORT, context allowlist
 ```
 
-Sau khi sửa HTML/CSS/JavaScript hoặc file mẫu:
+HTML offline vẫn có thể tạo bằng `python scripts/build_html.py` → `dist/dashboard_ccdc.html`, chỉ nhúng dữ liệu giả. Nó không đồng bộ bucket hoặc thay thế phiên IAP online. Không đưa HTML/ZIP nhúng dữ liệu nội bộ vào Git/image.
 
-```bat
-.venv\Scripts\python.exe scripts\build_html.py
-```
-
-Kết quả ở `dist/dashboard_ccdc.html`; nhúng thư viện Excel và dữ liệu nên file này tự mở offline. Thay dữ liệu mẫu cần cập nhật `SAMPLE_CUTOFF` trong `core.py`. Thay file mẫu không ghi đè lịch sử Streamlit đang có; dùng luồng nhập/duyệt để thay hiện trạng.
+SQLite runtime cũ của demo vẫn giữ tại `data/runtime` trên máy local, không tự migrate hoặc upload; bản online mới dùng `data/runtime-v2` hoặc GCS theo cấu hình. Các file thật của baseline đã được sao lưu local ngoài checkout trước khi loại khỏi tree mới. **Lịch sử commit `c591728` vẫn có dữ liệu thật**; owner cần xử lý quyền truy cập/private/history theo quy định. Không tự force-push hoặc khẳng định đã xóa khỏi lịch sử.
 
 ## Kiểm thử
 
-```bat
-.venv\Scripts\python.exe -m unittest discover -s tests -v
+```sh
+python -m unittest discover -s tests -v
+python scripts/test_deploy_safety.py  # toàn bộ gcloud được mock
+python scripts/benchmark_ingestion.py --rows 100000 --output /tmp/ccdc-benchmark.json
 ```
 
-Kiểm thử browser tùy chọn cần Node.js, Chromium/Chrome hoặc Chromium của Playwright:
+Node chỉ cần cho test browser tùy chọn:
 
 ```sh
 npm ci
@@ -109,6 +123,25 @@ python scripts/build_html.py
 npm run test:browser
 ```
 
-Có thể đặt `CHROMIUM_PATH` trỏ tới Chrome/Chromium đã cài. Bộ kiểm thử tự mở một máy chủ tạm trên loopback, kiểm tra trình duyệt, rồi dừng; không triển khai website. Xem `TEST_REPORT.md` để biết kết quả thực tế, thống kê mẫu và giới hạn kiểm thử.
+Có thể đặt `CHROMIUM_PATH` trỏ Chrome/Chromium đã cài. Để lặp lại5 phiên thật trên snapshot giả:
 
-Nếu dùng môi trường Codex, mỗi task đã được cô lập: dùng checkout hiện có, không tự tạo Git worktree trừ khi được yêu cầu.
+```sh
+python scripts/prepare_load_fixture.py --rows 100000 --data-dir /tmp/ccdc-load/store --output /tmp/ccdc-load/expected.json
+APP_ENV=local STORAGE_BACKEND=local LOCAL_DATA_DIR=/tmp/ccdc-load/store python -m streamlit run app.py --server.port 8502 --server.headless true --browser.gatherUsageStats false
+# Terminal khác, PID là PID tiến trình Streamlit vừa khởi động (tùy chọn để lấy RSS Linux):
+node scripts/check_concurrency.cjs --origin http://127.0.0.1:8502 --pid PID --expected /tmp/ccdc-load/expected.json --output /tmp/ccdc-load/result.json
+```
+
+Fixture script chỉ tạo local giả và từ chối ghi đè store/output đã có. Harness cần5 chi nhánh và ít nhất2 trang mỗi nhánh; dùng100k như ví dụ. Server test do người chạy dừng khi xong. Benchmark và local browser không chứng minh IAM/IAP hoặc5 tài khoản thật trên Cloud Run đã hoạt động. Xem [kết quả và giới hạn](docs/VALIDATION_RESULTS.md).
+
+## Troubleshooting
+
+- Không có dữ liệu cloud: kiểm active pointer và quyền runtime đọc bucket; không fallback sang Excel laptop.
+- Không đăng nhập: kiểm IAP/OAuth/danh sách user và expected audience; không tắt IAP hay tin header email để sửa nhanh.
+- CLI từ chối Admin: kiểm ADC scope email + cloud-platform, Google verified email và `ADMIN_EMAILS` + IAM; không truyền `--actor` tự khai.
+- Publish conflict: đọc lại active, tạo preview mới và đối chiếu; không ghi đè bỏ generation.
+- File có formula/link: xuất file values-only và kiểm tra với Admin. Không sửa dữ liệu nguồn hoặc tắt validation.
+- Lỗi storage: UI có mã sự cố, không hiển thị stack trace/token/dòng nguồn; kiểm Cloud Logging theo mã.
+- Chi phí/cold start/WebSocket: xem runbook, request-based vẫn có thể tính phí khi giữ tab; Budget Alert không tự cắt phí.
+
+Nếu dùng Codex, mỗi task đã cô lập: dùng checkout hiện có, không tự tạo Git worktree trừ khi được yêu cầu.

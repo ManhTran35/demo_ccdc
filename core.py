@@ -40,6 +40,11 @@ def clean(value) -> str:
 
 
 def parse_date(value):
+    """Read source text as day/month/year, never guessing US month/day order.
+
+    ISO is accepted for our internal snapshots; Excel date cells and serial
+    numbers remain supported. Optional time components do not change the day.
+    """
     if value is None or clean(value) == "":
         return None, "Thiếu ngày"
     if isinstance(value, datetime):
@@ -54,12 +59,34 @@ def parse_date(value):
                 pass
         return None, "Ngày không hợp lệ"
     text = clean(value)
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+    match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?", text)
+    if match:
         try:
-            return datetime.strptime(text, fmt).date(), "Hợp lệ"
+            day, month, year, hour, minute, second, micro = match.groups()
+            return datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0),
+                            int(second or 0), int((micro or "0").ljust(6, "0"))).date(), "Hợp lệ"
+        except ValueError:
+            return None, "Ngày không hợp lệ"
+    if re.match(r"^\d{4}-\d{2}-\d{2}(?:$|[T ])", text):
+        try:
+            return datetime.fromisoformat(text).date(), "Hợp lệ"
         except ValueError:
             pass
     return None, "Ngày không hợp lệ"
+
+
+def format_date(value):
+    """Vietnamese display/export date; keep normalized storage in ISO format."""
+    parsed, _ = parse_date(value)
+    return parsed.strftime("%d/%m/%Y") if parsed else ""
+
+
+def display_frame(frame):
+    out = frame.copy()
+    if "Ngày đưa vào sử dụng" in out:
+        values = {value: format_date(value) for value in out["Ngày đưa vào sử dụng"].fillna("").unique()}
+        out["Ngày đưa vào sử dụng"] = out["Ngày đưa vào sử dụng"].fillna("").map(values)
+    return out
 
 
 def full_months(start: date | None, today: date) -> int | None:
@@ -215,11 +242,43 @@ def normalize(table, mapping, today=None):
             flags[idx].append(label.loc[idx] if isinstance(label, pd.Series) else label)
     df["Vấn đề dữ liệu"] = ["; ".join(f) for f in flags]
     df["Dòng Excel"] = table.get("source_lines", list(range(2, len(df) + 2)))
+    df["_search"] = df[["Mã VTTB", "Tên VTTB", "Serial", "Đơn vị quản lý", "Chi nhánh"]].astype(str).agg(" ".join, axis=1).map(norm)
     review_mask = (df["Loại VTTB"] == UNCLASSIFIED) | df["Trạng thái phân loại"].str.contains("rà soát")
     report = {"source_rows": len(raw), "joined_rows": len(df), "invalid_quantity": int(invalid_qty.sum()), "missing_date": int((date_status == "Thiếu ngày").sum()), "invalid_date": int((date_status == "Ngày không hợp lệ").sum()), "future_date": int((date_status == "Ngày ở tương lai").sum()), "duplicate_serial_rows": int(duplicate_serial.sum()), "duplicate_serial_values": int(serial[duplicate_serial].nunique()), "duplicate_rows": int(duplicate_rows.sum()), "unclassified_rows": int((df["Loại VTTB"] == UNCLASSIFIED).sum()), "unclassified_names": int(df.loc[df["Loại VTTB"] == UNCLASSIFIED, "Tên VTTB"].map(norm).nunique()), "review_rows": int(review_mask.sum()), "review_names": int(df.loc[review_mask, "Tên VTTB"].map(norm).nunique()), "missing_code": int((df["Mã VTTB"] == "").sum()), "missing_name": int((df["Tên VTTB"] == "").sum()), "today": today.isoformat()}
     report["errors"] = (["File không có bản ghi dữ liệu."] if len(df) == 0 else []) + ([f"{report['invalid_quantity']} dòng có số lượng thiếu, âm hoặc không phải số."] if report["invalid_quantity"] else [])
     assert len(df) == len(raw), "Ghép phân loại đã làm thay đổi số dòng nguồn."
     return df, report
+
+
+def refresh_dynamic_fields(df, today=None):
+    """Recompute only daily age/date flags from a normalized Parquet snapshot.
+
+    Classification and source normalization happen once during ingestion. Raw
+    dates, identifiers, row order and static quality flags are never rewritten.
+    """
+    today = today or vn_today()
+    out = df.copy()
+    date_cache = {}
+    for value in out["Ngày đưa vào sử dụng"].fillna("").unique():
+        date_cache[value] = parse_date(value)[0]
+    dates = out["Ngày đưa vào sử dụng"].fillna("").map(date_cache)
+    previous = out["Trạng thái ngày"]
+    statuses = [
+        ("Ngày ở tương lai" if value > today else "Hợp lệ") if value
+        else ("Thiếu ngày" if old == "Thiếu ngày" else "Ngày không hợp lệ")
+        for value, old in zip(dates, previous)
+    ]
+    out["Trạng thái ngày"] = statuses
+    out["Số tháng sử dụng"] = pd.array([full_months(v, today) for v in dates], dtype="Int64")
+    out["Nhóm thời gian sử dụng"] = out["Số tháng sử dụng"].map(age_group)
+    day_flags = {"Thiếu ngày", "Ngày không hợp lệ", "Ngày ở tương lai"}
+    out["Vấn đề dữ liệu"] = [
+        "; ".join(([status] if status != "Hợp lệ" else []) + [f for f in str(flags or "").split("; ") if f and f not in day_flags])
+        for flags, status in zip(out["Vấn đề dữ liệu"].fillna(""), statuses)
+    ]
+    if "_search" not in out:
+        out["_search"] = out[["Mã VTTB", "Tên VTTB", "Serial", "Đơn vị quản lý", "Chi nhánh"]].astype(str).agg(" ".join, axis=1).map(norm)
+    return out
 
 
 def apply_filters(df, branches=(), managers=(), types=(), statuses=(), search="", issue=""):
@@ -229,7 +288,7 @@ def apply_filters(df, branches=(), managers=(), types=(), statuses=(), search=""
             mask &= df[col].isin(selected)
     if clean(search):
         keys = ["Mã VTTB", "Tên VTTB", "Serial", "Đơn vị quản lý", "Chi nhánh"]
-        haystack = df[keys].astype(str).agg(" ".join, axis=1).map(norm)
+        haystack = df["_search"] if "_search" in df else df[keys].astype(str).agg(" ".join, axis=1).map(norm)
         mask &= haystack.str.contains(norm(search), regex=False)
     if issue:
         mask &= df["Vấn đề dữ liệu"].str.contains(issue, regex=False)
@@ -267,11 +326,11 @@ def suggestions(name, mapping, limit=3):
 
 
 def export_frame(df, columns, cutoff, today):
-    out = df[list(columns)].copy()
+    out = display_frame(df[list(columns)])
     if "Số tháng sử dụng" in out:
         out["Số tháng sử dụng"] = out["Số tháng sử dụng"].astype(object).where(out["Số tháng sử dụng"].notna(), UNKNOWN)
-    out["Ngày chốt dữ liệu"] = str(cutoff)
-    out["Ngày tính tuổi sử dụng"] = today.isoformat() if isinstance(today, date) else str(today)
+    out["Ngày chốt dữ liệu"] = format_date(cutoff)
+    out["Ngày tính tuổi sử dụng"] = format_date(today)
     return out
 
 
@@ -362,8 +421,9 @@ class VersionStore:
 def seed_store(store):
     if store.list():
         return
-    content = (ROOT / "data" / "samples" / "ccdc.xlsx").read_bytes()
+    from services.demo import synthetic_files
+    content, classification = synthetic_files(1000)
     table = read_table(content)
-    mapping, _ = classification_map(read_table((ROOT / "data" / "samples" / "classification.xlsx").read_bytes(), True))
-    version_id = store.create(content, "file ccdc.xlsx", SAMPLE_CUTOFF, table, mapping, "Phiên mẫu từ hai file người dùng cung cấp; ngày chốt đã xác nhận.")
+    mapping, _ = classification_map(read_table(classification, True))
+    version_id = store.create(content, "inventory_demo.xlsx", SAMPLE_CUTOFF, table, mapping, "DỮ LIỆU GIẢ cho compatibility demo local.")
     store.publish(version_id, "Người duyệt")

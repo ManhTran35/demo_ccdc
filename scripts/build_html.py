@@ -12,12 +12,14 @@ from core import SAMPLE_CUTOFF, classification_map, read_table
 
 
 def build(target=None):
-    source = (ROOT / "data" / "samples" / "ccdc.xlsx").read_bytes()
+    from services.demo import synthetic_files
+    source, classification = synthetic_files(1000)
     table = read_table(source)
-    mapping, _ = classification_map(read_table((ROOT / "data" / "samples" / "classification.xlsx").read_bytes(), True))
-    payload = {"id": hashlib.sha256(source).hexdigest()[:32], "name": "file ccdc.xlsx", "cutoff": SAMPLE_CUTOFF, "created_at": "2026-10-13T00:00:00.000Z", "published_at": "2026-10-13T00:00:00.000Z", "table": table, "mapping": mapping, "note": "Phiên mẫu từ file người dùng cung cấp; ngày chốt đã xác nhận."}
+    mapping, _ = classification_map(read_table(classification, True))
+    payload = {"id": hashlib.sha256(source).hexdigest()[:32], "name": "inventory_demo.xlsx", "cutoff": SAMPLE_CUTOFF, "created_at": "2026-10-13T00:00:00.000Z", "published_at": "2026-10-13T00:00:00.000Z", "table": table, "mapping": mapping, "note": "DỮ LIỆU GIẢ — demo offline, không phải dữ liệu doanh nghiệp."}
     data = base64.b64encode(gzip.compress(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(), mtime=0)).decode()
     html = (ROOT / "assets" / "dashboard.template.html").read_text(encoding="utf-8")
+    html = html.replace("Giải nén dữ liệu mẫu…", "Giải nén dữ liệu giả cho demo offline…")
     for placeholder, value in [
         ("/*__CSS__*/", (ROOT / "assets" / "dashboard.css").read_text(encoding="utf-8")),
         ("__DATA__", data),

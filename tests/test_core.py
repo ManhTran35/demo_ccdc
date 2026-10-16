@@ -52,6 +52,24 @@ class AgeTests(unittest.TestCase):
         self.assertEqual(parse_date('')[1],'Thiếu ngày')
         self.assertEqual(parse_date(0)[1],'Ngày không hợp lệ')
 
+    def test_source_dates_are_always_day_first_including_time(self):
+        for value, expected in [('01/02/2026',date(2026,2,1)),('02/01/2026',date(2026,1,2)),
+                                ('13/10/2026',date(2026,10,13)),('29/02/2024 13:45:01.123456',date(2024,2,29)),
+                                ('1/2/2026 0:00',date(2026,2,1)),('2026-02-01T00:00:00.123456',date(2026,2,1))]:
+            with self.subTest(value=value): self.assertEqual(parse_date(value)[0],expected)
+        for value in ['10/13/2026','29/02/2025','31/04/2026','01/02/26','01/02/2026 25:00']:
+            with self.subTest(value=value): self.assertEqual(parse_date(value)[1],'Ngày không hợp lệ')
+
+    def test_excel_text_native_and_serial_dates_preserve_calendar_day(self):
+        wb=Workbook();ws=wb.active;ws.append(COLS)
+        for value in ['01/02/2026', '02/01/2026', datetime(2026,2,1,12,30), 46054]:
+            row=fixture()['rows'][0].copy();row[9]=value;ws.append(row)
+        out=io.BytesIO();wb.save(out)
+        frame,_=normalize(read_table(out.getvalue()),MAPPING,date(2026,10,15))
+        self.assertEqual(frame['Ngày đưa vào sử dụng'].tolist(),['2026-02-01','2026-01-02','2026-02-01','2026-02-01'])
+        self.assertEqual(display_frame(frame)['Ngày đưa vào sử dụng'].tolist(),['01/02/2026','02/01/2026','01/02/2026','01/02/2026'])
+        self.assertEqual(frame.iloc[0]['Gốc · Ngày đưa vào sử dụng'],'01/02/2026')
+
     def test_day_refresh(self):
         before,_=normalize(fixture(),MAPPING,date(2026,3,19))
         after,_=normalize(fixture(),MAPPING,date(2026,3,20))
@@ -143,12 +161,13 @@ class DataTests(unittest.TestCase):
         self.assertEqual(csv_rows[0]['Mã đơn vị'],'001')
         self.assertEqual(csv_rows[0]['Serial'],'0001')
         self.assertEqual(csv_rows[1]['Số tháng sử dụng'],UNKNOWN)
-        self.assertEqual(csv_rows[0]['Ngày tính tuổi sử dụng'],'2026-03-20')
+        self.assertEqual(csv_rows[0]['Ngày tính tuổi sử dụng'],'20/03/2026')
+        self.assertEqual(csv_rows[0]['Ngày đưa vào sử dụng'],'20/03/2025')
         wb=load_workbook(io.BytesIO(export_excel(frame)),read_only=True)
         values=list(wb.active.values)
         self.assertEqual(len(values),3)
         self.assertEqual(values[1][2],'0007')
-        self.assertEqual(values[1][-2: ],('2026-03-20','2026-03-20'))
+        self.assertEqual(values[1][-2: ],('20/03/2026','20/03/2026'))
         wb.close()
 
     def test_excel_numeric_identifier_format(self):
